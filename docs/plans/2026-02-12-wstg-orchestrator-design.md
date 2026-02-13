@@ -2,7 +2,7 @@
 
 ## Overview
 
-A modular, autonomous Web Application Security Testing Orchestration Framework aligned with OWASP WSTG. Designed from a black-box / bug bounty hunter perspective with strict data chaining between modules.
+A modular, mostly autonomous Web Application Security Testing Orchestration Framework aligned with OWASP WSTG. Designed from a black-box / bug bounty hunter perspective with strict data chaining between modules.
 
 - **Language:** Python 3.11+
 - **Architecture:** Modular with central orchestrator
@@ -17,9 +17,9 @@ A modular, autonomous Web Application Security Testing Orchestration Framework a
 
 ### Program Scope
 - `company_name` — evidence directory naming and display
-- `base_domain` — anchor domain; all discovered assets must contain this somewhere in the URL to be actionable
+- `base_domain` — primary anchor domain; discovered assets are in scope if their URL contains this substring *or* they are explicitly listed in `in_scope_urls` / `in_scope_ips` (enables subdomains and same-brand assets)
 - `wildcard_urls` — patterns like `*.example.com`
-- `in_scope_urls` / `in_scope_ips` — explicit targets
+- `in_scope_urls` / `in_scope_ips` — explicit targets; use for related companies, acquisitions, sister companies, or third-party domains that do not contain `base_domain`
 - `out_of_scope_urls` / `out_of_scope_ips` — blacklist, checked before every action
 - `out_of_scope_attack_vectors` — disallowed attack types (e.g., `dos`, `social_engineering`). Modules check this before running specific test categories
 - `rate_limit` — requests per second for active target interaction only
@@ -27,7 +27,7 @@ A modular, autonomous Web Application Security Testing Orchestration Framework a
 - `notes` — free-text for program-specific context
 
 ### Scope Enforcement Rules
-- **Blacklist + base domain anchoring:** Everything is fair game as long as it's not on the blacklist AND contains the base domain URL somewhere. Allows investigation of related companies, acquisitions, sister companies, third-party assets
+- **In-scope predicate:** A target is in scope if and only if (1) it is not on the blacklist (`out_of_scope_urls` / `out_of_scope_ips`), and (2) at least one of: the URL contains `base_domain`, the URL matches an `in_scope_urls` entry, or the IP matches `in_scope_ips`. This supports both same-domain discovery (subdomains, wildcards) and explicitly listed related companies, acquisitions, sister companies, and third-party assets.
 - `ScopeChecker` utility instantiated at startup, injected into every module
 - Every action calls `scope_checker.is_in_scope(target)` before proceeding
 
@@ -43,7 +43,7 @@ A modular, autonomous Web Application Security Testing Orchestration Framework a
 
 ### Interactive Scope Builder
 - `main.py` runs an interactive prompt session at startup before any scanning
-- Walks user through: company name, base domain, in-scope URLs/IPs, out-of-scope URLs/IPs, out-of-scope attack vectors, rate limits, custom headers, auth profiles, callback server config, notes
+- Walks user through: company name, base domain, in-scope URLs/IPs (including related or acquired domains that do not contain the base domain), out-of-scope URLs/IPs, out-of-scope attack vectors, rate limits, custom headers, auth profiles, callback server config, notes
 - Writes completed `config.yaml` to disk
 - If `config.yaml` already exists, asks whether to reuse or reconfigure
 
@@ -51,7 +51,7 @@ A modular, autonomous Web Application Security Testing Orchestration Framework a
 
 ## 2. State Manager & Data Chain
 
-`state_manager.py` owns `state.json`, persisted to disk. Thread-safe read/write access.
+`state_manager.py` owns `state.json`, persisted to disk. All access is serialized by a single lock so that concurrent threads and async workers update state atomically without lost updates (see Key Behaviors).
 
 ### State Structure
 ```json
@@ -107,12 +107,12 @@ A modular, autonomous Web Application Security Testing Orchestration Framework a
 ```
 
 ### Key Behaviors
-- Threading lock for concurrent access
-- `save()` writes to disk after every module/sub-category completion (checkpoint for resume)
-- `enrich(key, values)` appends to list fields with deduplication
-- `get(key)` reads current values for downstream modules
-- On startup, if `state.json` exists, loads it and checks `completed_phases` to determine resume point
-- `mark_subcategory_complete(phase, subcategory)` and `mark_phase_complete(phase)` for granular tracking
+- **Single lock:** All state access is protected by one threading lock. `get(key)`, `enrich(key, values)`, `set(key, value)`, and all `mark_*` operations acquire this lock so that list read–merge–write is atomic and concurrent workers cannot lose data.
+- **Atomic enrich:** `enrich(key, values)` appends to list fields with deduplication while holding the lock (single read–merge–write under the lock). No separate “get then set” by callers; all mutations go through StateManager to avoid race conditions.
+- **Checkpointing:** `save()` is invoked after every sub-category completion for resume. Modules may call `save()` after significant batch updates within a long-running sub-category so that a crash mid-execution persists partial results; the orchestrator does not rely solely on end-of-module checkpoints.
+- `get(key)` reads current values for downstream modules (under the same lock).
+- On startup, if `state.json` exists, loads it and checks `completed_phases` to determine resume point.
+- `mark_subcategory_complete(phase, subcategory)` and `mark_phase_complete(phase)` for granular tracking (also under the lock).
 
 ---
 
@@ -171,6 +171,7 @@ Lightweight HTTP/DNS listener for confirming blind/out-of-band exploits.
 
 ### Availability
 - **Always available.** If no host/port configured in `config.yaml`, auto-starts on default port and detects machine's external IP (falls back to local)
+- **Port conflict handling:** When auto-starting, the server attempts to bind to the default port; if it is already in use (e.g. `AddressAlreadyInUse`), it tries a defined fallback sequence (e.g. default+1, default+2, … up to a small limit). The first successfully bound port is used; callback URLs always reflect the actual bound port. If no port in the sequence is available, the server does not crash: it logs a clear error, does not start the listener, and continues in URL-only mode (callback URLs are still generated for use with an external tunnel; blind tests run but will not receive callbacks until the user frees a port or configures a tunnel in config). This keeps behavior defined and avoids silent failure or runtime crashes
 - Supports ngrok/tunnel URL override for testing behind NAT
 - No tests are ever skipped for lack of a callback server
 
@@ -184,6 +185,8 @@ evidence/
 └── <company_name>/
     ├── reconnaissance/
     │   ├── tool_output/
+    │   ├── raw_requests/
+    │   ├── raw_responses/
     │   ├── parsed/
     │   ├── evidence/
     │   └── screenshots/
@@ -220,7 +223,7 @@ evidence/
     └── reports/
 ```
 
-Each phase only creates subdirectories that are relevant to it (e.g., recon skips raw_requests/).
+Each phase only creates subdirectories that are relevant to it (e.g., recon does not use potential_exploits/ or confirmed_exploits/).
 
 ### Evidence Logger (`evidence_logger.py`)
 Each module receives a phase-specific logger instance:
@@ -250,6 +253,7 @@ Each module receives a phase-specific logger instance:
 ### Execution Model (Hybrid Concurrency)
 - **Inter-module:** Modules run in threads and can overlap when state dependencies are met
 - **Intra-module:** Async workers handle parallel tasks (probing multiple hosts, testing multiple params)
+- **State safety:** All concurrent state updates from threads and async workers go through StateManager; the single lock ensures atomic enrich/save and no lost updates (see §2 Key Behaviors)
 - Rate limiter sits on top of everything
 
 ### Module Dependency Graph
