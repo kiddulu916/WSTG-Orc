@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+tests/
+venv/
+CLAUDE.md
+config.yaml
+state.json
