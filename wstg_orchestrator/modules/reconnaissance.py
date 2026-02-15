@@ -9,12 +9,14 @@ from wstg_orchestrator.utils.parser_utils import (
     extract_params_from_url,
     extract_urls_from_text,
     detect_id_patterns,
+    strip_scheme,
+    parse_url_components,
 )
 
 
 class ReconModule(BaseModule):
     PHASE_NAME = "reconnaissance"
-    SUBCATEGORIES = ["passive_osint", "live_host_validation", "parameter_harvesting"]
+    SUBCATEGORIES = ["passive_osint", "url_harvesting", "live_host_validation", "parameter_harvesting"]
     EVIDENCE_SUBDIRS = ["tool_output", "parsed", "evidence", "screenshots"]
 
     def __init__(self, *args, **kwargs):
@@ -30,6 +32,10 @@ class ReconModule(BaseModule):
         if not self.should_skip_subcategory("passive_osint"):
             await self._passive_osint()
             self.mark_subcategory_complete("passive_osint")
+
+        if not self.should_skip_subcategory("url_harvesting"):
+            await self._url_harvesting()
+            self.mark_subcategory_complete("url_harvesting")
 
         if not self.should_skip_subcategory("live_host_validation"):
             await self._live_host_validation()
@@ -52,7 +58,7 @@ class ReconModule(BaseModule):
         return domains
 
     async def _passive_osint(self):
-        self.logger.info("Starting passive OSINT")
+        self.logger.info("Starting passive OSINT - subdomain enumeration")
         all_subdomains = []
 
         target_domains = self._get_target_domains()
@@ -60,24 +66,54 @@ class ReconModule(BaseModule):
             subfinder_results = await self._run_subfinder(domain)
             all_subdomains.extend(subfinder_results)
 
+        all_subdomains = list(set(self._filter_in_scope(all_subdomains)))
+        self.state.enrich("discovered_subdomains", all_subdomains)
+        self.evidence.log_parsed("reconnaissance", "subdomains", all_subdomains)
+        self.logger.info(f"Found {len(all_subdomains)} subdomains")
+
+    async def _url_harvesting(self):
+        """Harvest URLs from gau/wayback and parse into three buckets."""
+        self.logger.info("Starting URL harvesting")
+
         gau_results = await self._run_gau()
         wayback_results = await self._run_wayback()
         all_urls = gau_results + wayback_results
 
-        # Extract subdomains from URLs
+        new_subdomains = []
+        new_endpoints = []
+        new_params = []
+
         for url in all_urls:
-            parsed = urlparse(url if "://" in url else f"http://{url}")
-            if parsed.hostname:
-                all_subdomains.append(parsed.hostname)
+            components = parse_url_components(url)
+            hostname = components["hostname"]
 
-        all_subdomains = list(set(self._filter_in_scope(all_subdomains)))
-        all_urls = list(set(self._filter_in_scope(all_urls)))
+            if not hostname:
+                continue
 
-        self.state.enrich("discovered_subdomains", all_subdomains)
-        self.state.enrich("endpoints", all_urls)
-        self.evidence.log_parsed("reconnaissance", "subdomains", all_subdomains)
-        self.evidence.log_parsed("reconnaissance", "historical_urls", all_urls)
-        self.logger.info(f"Found {len(all_subdomains)} subdomains, {len(all_urls)} URLs")
+            # Always extract hostname -> discovered_subdomains
+            new_subdomains.append(hostname)
+
+            if components["has_query"]:
+                # URL with query string -> parameters (full) + endpoints (base path)
+                new_params.append(components["full"])
+                new_endpoints.append(components["path"])
+            elif components["path"] != hostname:
+                # URL with path but no query -> endpoints (classification as
+                # endpoint vs directory_path happens later during probing)
+                new_endpoints.append(components["path"])
+
+        new_subdomains = list(set(self._filter_in_scope(new_subdomains)))
+        new_endpoints = list(set(new_endpoints))
+        new_params = list(set(new_params))
+
+        self.state.enrich("discovered_subdomains", new_subdomains)
+        self.state.enrich("endpoints", new_endpoints)
+        self.state.enrich("parameters", new_params)
+        self.evidence.log_parsed("reconnaissance", "harvested_urls", all_urls)
+        self.logger.info(
+            f"Harvested {len(new_subdomains)} subdomains, "
+            f"{len(new_endpoints)} endpoints, {len(new_params)} parameters"
+        )
 
     async def _run_subfinder(self, domain: str | None = None) -> list[str]:
         target = domain or self.config.base_domain
@@ -143,7 +179,15 @@ class ReconModule(BaseModule):
 
     async def _live_host_validation(self):
         self.logger.info("Starting live host validation")
-        subdomains = self.state.get("discovered_subdomains") or []
+        subdomains = list(self.state.get("discovered_subdomains") or [])
+
+        # Merge in_scope_urls (extract hostnames from paths)
+        in_scope = getattr(self.config, "in_scope_urls", []) or []
+        for url in in_scope:
+            hostname = url.split("/")[0].split(":")[0]
+            if hostname and hostname not in subdomains:
+                subdomains.append(hostname)
+
         if not subdomains:
             subdomains = [self.config.base_domain]
 
@@ -162,7 +206,7 @@ class ReconModule(BaseModule):
         self.logger.info(f"Found {len(live_hosts)} live hosts")
 
     async def _run_httpx(self, subdomains: list[str]) -> tuple[list[str], list[str]]:
-        import tempfile, os
+        import tempfile, os, json
         fd, input_file = tempfile.mkstemp(suffix=".txt")
         with os.fdopen(fd, "w") as f:
             f.write("\n".join(subdomains))
@@ -177,7 +221,6 @@ class ReconModule(BaseModule):
         techs = []
         if result.returncode == 0:
             self.evidence.log_tool_output("reconnaissance", "httpx", result.stdout)
-            import json
             for line in result.stdout.splitlines():
                 if not line.strip():
                     continue
@@ -185,12 +228,14 @@ class ReconModule(BaseModule):
                     entry = json.loads(line)
                     url = entry.get("url", "")
                     if url:
-                        live.append(url)
+                        hostname = parse_url_components(url)["hostname"]
+                        if hostname:
+                            live.append(hostname)
                     for tech in entry.get("tech", []):
                         techs.append(tech)
                 except json.JSONDecodeError:
                     if line.strip():
-                        live.append(line.strip())
+                        live.append(strip_scheme(line.strip()))
         return live, list(set(techs))
 
     async def _fallback_probe(self, subdomains: list[str]) -> tuple[list[str], list[str]]:
@@ -201,7 +246,7 @@ class ReconModule(BaseModule):
             for scheme in ["https", "http"]:
                 try:
                     resp = requests.get(f"{scheme}://{sub}", timeout=10, allow_redirects=True)
-                    live.append(f"{scheme}://{sub}")
+                    live.append(sub)  # Store bare hostname, not full URL
                     server = resp.headers.get("Server", "")
                     if server:
                         techs.append(server)
