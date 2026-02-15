@@ -146,3 +146,27 @@ def test_enumeration_domains_excludes_in_scope_urls():
         assert "app.testcorp.com" not in domains
     finally:
         os.remove(path)
+
+
+def test_scope_checker_uses_wildcard_and_in_scope():
+    cfg = {
+        "program_scope": {
+            "base_domain": "testcorp.com",
+            "wildcard_urls": ["testcorp.com"],
+            "in_scope_urls": ["partner.com"],
+            "out_of_scope_urls": [],
+            "out_of_scope_ips": [],
+            "out_of_scope_attack_vectors": [],
+        },
+    }
+    fd, path = tempfile.mkstemp(suffix=".yaml")
+    os.close(fd)
+    with open(path, "w") as f:
+        yaml.dump(cfg, f)
+    try:
+        config = ConfigLoader(path)
+        checker = config.create_scope_checker()
+        assert checker.is_in_scope("partner.com") is True
+        assert checker.is_in_scope("evil.com") is False
+    finally:
+        os.remove(path)

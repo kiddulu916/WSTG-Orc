@@ -86,6 +86,8 @@ class ConfigLoader:
     def create_scope_checker(self) -> ScopeChecker:
         return ScopeChecker(
             base_domain=self.base_domain,
+            wildcard_urls=self.wildcard_urls,
+            in_scope_urls=self.in_scope_urls,
             out_of_scope_urls=self.out_of_scope_urls,
             out_of_scope_ips=self.out_of_scope_ips,
             out_of_scope_attack_vectors=self.out_of_scope_attack_vectors,
