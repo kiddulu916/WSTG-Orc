@@ -90,12 +90,13 @@ class Orchestrator:
         evidence_dir: str = "evidence",
     ):
         self.config = ConfigLoader(config_path)
+        self.scope_checker = self.config.create_scope_checker()
         self.state = StateManager(
             state_path,
             target_domain=self.config.base_domain,
             company_name=self.config.company_name,
+            scope_checker=self.scope_checker,
         )
-        self.scope_checker = self.config.create_scope_checker()
         self.rate_limiter = RateLimiter(
             requests_per_second=self.config.rate_limit,
             base_domain=self.config.base_domain,
