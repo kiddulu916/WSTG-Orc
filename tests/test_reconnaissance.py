@@ -12,6 +12,7 @@ def recon_module():
     state.is_subcategory_complete.return_value = False
     config = MagicMock()
     config.base_domain = "example.com"
+    config.enumeration_domains = ["example.com"]
     config.get_tool_config.return_value = {}
     scope = MagicMock()
     scope.is_in_scope.return_value = True
@@ -40,6 +41,35 @@ async def test_passive_osint_runs_subfinder(recon_module):
             with patch.object(recon_module, '_run_wayback', new_callable=AsyncMock, return_value=[]):
                 await recon_module._passive_osint()
                 recon_module.state.enrich.assert_any_call("discovered_subdomains", ["sub.example.com"])
+
+
+@pytest.mark.asyncio
+async def test_passive_osint_uses_enumeration_domains(recon_module):
+    """Subdomain enumeration should iterate over all enumeration domains."""
+    recon_module.config.enumeration_domains = ["example.com", "api.example.com", "partner.com"]
+    calls = []
+
+    async def mock_subfinder(domain=None):
+        calls.append(domain)
+        return [f"sub.{domain}"]
+
+    with patch.object(recon_module, '_run_subfinder', side_effect=mock_subfinder):
+        with patch.object(recon_module, '_run_gau', new_callable=AsyncMock, return_value=[]):
+            with patch.object(recon_module, '_run_wayback', new_callable=AsyncMock, return_value=[]):
+                await recon_module._passive_osint()
+                assert calls == ["example.com", "api.example.com", "partner.com"]
+
+
+def test_get_target_domains_from_enumeration_domains(recon_module):
+    """_get_target_domains returns enumeration_domains when available."""
+    recon_module.config.enumeration_domains = ["example.com", "api.example.com"]
+    assert recon_module._get_target_domains() == ["example.com", "api.example.com"]
+
+
+def test_get_target_domains_fallback(recon_module):
+    """_get_target_domains falls back to base_domain when enumeration_domains is empty."""
+    recon_module.config.enumeration_domains = []
+    assert recon_module._get_target_domains() == ["example.com"]
 
 
 @pytest.mark.asyncio

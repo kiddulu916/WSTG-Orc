@@ -9,6 +9,12 @@ class ScopeBuilder:
         company_name = input("Company name: ").strip()
         base_domain = input("Base domain (e.g., example.com): ").strip()
 
+        wildcard_urls = self._parse_list(
+            input("Wildcard URLs (e.g., *.example.com, *.sub.example.com; comma-separated, or empty): ")
+        )
+        if not wildcard_urls:
+            wildcard_urls = [f"*.{base_domain}"]
+
         in_scope_urls = self._parse_list(
             input("In-scope URLs (comma-separated, or empty): ")
         )
@@ -46,7 +52,7 @@ class ScopeBuilder:
             "program_scope": {
                 "company_name": company_name,
                 "base_domain": base_domain,
-                "wildcard_urls": [f"*.{base_domain}"],
+                "wildcard_urls": wildcard_urls,
                 "in_scope_urls": in_scope_urls,
                 "in_scope_ips": in_scope_ips,
                 "out_of_scope_urls": out_of_scope_urls,

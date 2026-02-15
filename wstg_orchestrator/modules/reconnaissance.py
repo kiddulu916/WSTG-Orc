@@ -39,12 +39,26 @@ class ReconModule(BaseModule):
             await self._parameter_harvesting()
             self.mark_subcategory_complete("parameter_harvesting")
 
+    def _get_target_domains(self) -> list[str]:
+        """Return deduplicated list of domains to enumerate subdomains for.
+
+        Uses enumeration_domains from config which combines base_domain,
+        wildcard domains (with '*.' stripped), and in-scope URL hostnames.
+        Falls back to base_domain if enumeration_domains is unavailable.
+        """
+        domains = getattr(self.config, "enumeration_domains", None) or []
+        if not domains:
+            domains = [self.config.base_domain]
+        return domains
+
     async def _passive_osint(self):
         self.logger.info("Starting passive OSINT")
         all_subdomains = []
 
-        subfinder_results = await self._run_subfinder()
-        all_subdomains.extend(subfinder_results)
+        target_domains = self._get_target_domains()
+        for domain in target_domains:
+            subfinder_results = await self._run_subfinder(domain)
+            all_subdomains.extend(subfinder_results)
 
         gau_results = await self._run_gau()
         wayback_results = await self._run_wayback()
@@ -65,21 +79,25 @@ class ReconModule(BaseModule):
         self.evidence.log_parsed("reconnaissance", "historical_urls", all_urls)
         self.logger.info(f"Found {len(all_subdomains)} subdomains, {len(all_urls)} URLs")
 
-    async def _run_subfinder(self) -> list[str]:
+    async def _run_subfinder(self, domain: str | None = None) -> list[str]:
+        target = domain or self.config.base_domain
+        self.logger.info(f"Running subfinder for domain: {target}")
         result = self._cmd.run(
-            "subfinder", ["-d", self.config.base_domain, "-silent"], timeout=300,
+            "subfinder", ["-d", target, "-silent"], timeout=300,
         )
         if result.tool_missing:
             self.logger.warning("subfinder not found, trying amass")
-            return await self._run_amass()
+            return await self._run_amass(target)
         if result.returncode == 0:
             self.evidence.log_tool_output("reconnaissance", "subfinder", result.stdout)
             return [line.strip() for line in result.stdout.splitlines() if line.strip()]
         return []
 
-    async def _run_amass(self) -> list[str]:
+    async def _run_amass(self, domain: str | None = None) -> list[str]:
+        target = domain or self.config.base_domain
+        self.logger.info(f"Running amass for domain: {target}")
         result = self._cmd.run(
-            "amass", ["enum", "-passive", "-d", self.config.base_domain], timeout=600,
+            "amass", ["enum", "-passive", "-d", target], timeout=600,
         )
         if result.tool_missing:
             self.logger.warning("amass not found, skipping subdomain enumeration tools")
@@ -90,34 +108,38 @@ class ReconModule(BaseModule):
         return []
 
     async def _run_gau(self) -> list[str]:
-        result = self._cmd.run(
-            "gau", [self.config.base_domain, "--subs"], timeout=300,
-        )
-        if result.tool_missing:
-            self.logger.warning("gau not found, skipping URL harvesting from gau")
-            return []
-        if result.returncode == 0:
-            self.evidence.log_tool_output("reconnaissance", "gau", result.stdout)
-            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        return []
+        all_urls = []
+        for domain in self._get_target_domains():
+            self.logger.info(f"Running gau for domain: {domain}")
+            result = self._cmd.run(
+                "gau", [domain, "--subs"], timeout=300,
+            )
+            if result.tool_missing:
+                self.logger.warning("gau not found, skipping URL harvesting from gau")
+                return []
+            if result.returncode == 0:
+                self.evidence.log_tool_output("reconnaissance", "gau", result.stdout)
+                all_urls.extend(line.strip() for line in result.stdout.splitlines() if line.strip())
+        return all_urls
 
     async def _run_wayback(self) -> list[str]:
         # Wayback Machine CDX API - no external tool needed
-        try:
-            from wstg_orchestrator.utils.http_utils import HttpClient
-            # Use raw requests to avoid scope check on archive.org
-            import requests
-            resp = requests.get(
-                f"https://web.archive.org/cdx/search/cdx?url=*.{self.config.base_domain}/*&output=text&fl=original&collapse=urlkey",
-                timeout=60,
-            )
-            if resp.status_code == 200:
-                urls = [line.strip() for line in resp.text.splitlines() if line.strip()]
-                self.evidence.log_tool_output("reconnaissance", "wayback", resp.text)
-                return urls
-        except Exception as e:
-            self.logger.warning(f"Wayback fetch failed: {e}")
-        return []
+        all_urls = []
+        for domain in self._get_target_domains():
+            try:
+                import requests
+                self.logger.info(f"Fetching Wayback URLs for domain: {domain}")
+                resp = requests.get(
+                    f"https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=text&fl=original&collapse=urlkey",
+                    timeout=60,
+                )
+                if resp.status_code == 200:
+                    urls = [line.strip() for line in resp.text.splitlines() if line.strip()]
+                    self.evidence.log_tool_output("reconnaissance", "wayback", resp.text)
+                    all_urls.extend(urls)
+            except Exception as e:
+                self.logger.warning(f"Wayback fetch failed for {domain}: {e}")
+        return all_urls
 
     async def _live_host_validation(self):
         self.logger.info("Starting live host validation")

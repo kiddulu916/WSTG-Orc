@@ -11,6 +11,7 @@ def test_build_config_from_inputs():
     inputs = iter([
         "TestCorp",                          # company name
         "testcorp.com",                      # base domain
+        "*.testcorp.com, *.api.testcorp.com",# wildcard urls
         "app.testcorp.com, api.testcorp.com",# in-scope urls
         "",                                  # in-scope ips
         "admin.testcorp.com",                # out-of-scope urls
@@ -29,11 +30,37 @@ def test_build_config_from_inputs():
 
     assert config["program_scope"]["company_name"] == "TestCorp"
     assert config["program_scope"]["base_domain"] == "testcorp.com"
+    assert config["program_scope"]["wildcard_urls"] == ["*.testcorp.com", "*.api.testcorp.com"]
     assert "app.testcorp.com" in config["program_scope"]["in_scope_urls"]
     assert "admin.testcorp.com" in config["program_scope"]["out_of_scope_urls"]
     assert "dos" in config["program_scope"]["out_of_scope_attack_vectors"]
     assert config["program_scope"]["rate_limit"] == 10
     assert config["program_scope"]["custom_headers"]["X-Bug-Bounty"] == "testcorp-123"
+
+
+def test_build_config_wildcard_default_fallback():
+    """When no wildcard URLs are provided, defaults to *.base_domain."""
+    inputs = iter([
+        "TestCorp",                          # company name
+        "testcorp.com",                      # base domain
+        "",                                  # wildcard urls (empty)
+        "",                                  # in-scope urls
+        "",                                  # in-scope ips
+        "",                                  # out-of-scope urls
+        "",                                  # out-of-scope ips
+        "",                                  # out-of-scope attack vectors
+        "",                                  # rate limit (default)
+        "",                                  # custom headers
+        "",                                  # auth profiles (skip)
+        "",                                  # callback host (default)
+        "",                                  # callback port (default)
+        "",                                  # notes
+    ])
+    with patch("builtins.input", lambda prompt="": next(inputs)):
+        builder = ScopeBuilder()
+        config = builder.build()
+
+    assert config["program_scope"]["wildcard_urls"] == ["*.testcorp.com"]
 
 
 def test_save_config():
