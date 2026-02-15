@@ -12,7 +12,7 @@ class StateManager:
         "completed_phases", "discovered_subdomains", "live_hosts",
         "open_ports", "technologies", "server_versions", "frameworks",
         "endpoints", "parameters", "forms", "auth_endpoints",
-        "api_endpoints", "cloud_assets", "potential_idor_candidates",
+        "api_endpoints", "cloud_assets", "potential_idor_candidates", "discovered_directory_paths",
         "valid_usernames", "inferred_cves", "exposed_admin_paths",
         "pending_callbacks", "potential_vulnerabilities",
         "confirmed_vulnerabilities", "evidence_index",
@@ -22,15 +22,17 @@ class StateManager:
         "discovered_subdomains", "live_hosts", "open_ports",
         "technologies", "server_versions", "frameworks", "endpoints",
         "parameters", "forms", "auth_endpoints", "api_endpoints",
-        "cloud_assets", "potential_idor_candidates", "valid_usernames",
+        "cloud_assets", "potential_idor_candidates", "discovered_directory_paths",
+        "valid_usernames",
         "inferred_cves", "exposed_admin_paths", "pending_callbacks",
         "potential_vulnerabilities", "confirmed_vulnerabilities",
         "evidence_index",
     ]
 
-    def __init__(self, state_file: str, target_domain: str = "", company_name: str = ""):
+    def __init__(self, state_file: str, target_domain: str = "", company_name: str = "", scope_checker=None):
         self._file = state_file
         self._lock = threading.Lock()
+        self._scope_checker = scope_checker
         if os.path.exists(state_file) and os.path.getsize(state_file) > 0:
             with open(state_file, "r") as f:
                 self._state = json.load(f)
@@ -62,8 +64,23 @@ class StateManager:
             existing = self._state.get(key, [])
             for v in values:
                 if v not in existing:
+                    if self._scope_checker and not self._is_value_in_scope(v):
+                        continue
                     existing.append(v)
             self._state[key] = existing
+
+    def _is_value_in_scope(self, value) -> bool:
+        """Check if a value passes scope filtering.
+        Handles both string values and dict values (extracts 'url' key)."""
+        if self._scope_checker is None:
+            return True
+        if isinstance(value, dict):
+            target = value.get("url", "")
+        else:
+            target = str(value)
+        if not target:
+            return True
+        return self._scope_checker.is_in_scope(target)
 
     def save(self):
         with self._lock:
