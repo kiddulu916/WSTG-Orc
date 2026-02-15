@@ -265,7 +265,7 @@ class ConfigTestingModule(BaseModule):
             rate_limiter=self.rate_limiter,
             custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
         )
-        return client.get(url, headers=extra_headers)
+        return client.try_request(url, headers=extra_headers)
 
     def _http_request(self, method: str, url: str):
         from wstg_orchestrator.utils.http_utils import HttpClient
@@ -274,4 +274,4 @@ class ConfigTestingModule(BaseModule):
             rate_limiter=self.rate_limiter,
             custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
         )
-        return client.request(method, url)
+        return client.try_request(url, method=method)

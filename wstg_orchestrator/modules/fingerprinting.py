@@ -48,8 +48,7 @@ class FingerprintingModule(BaseModule):
         all_versions = []
 
         # Extract hostnames for nmap
-        from urllib.parse import urlparse
-        hosts = list(set(urlparse(h).hostname for h in live_hosts if urlparse(h).hostname))
+        hosts = list(set(h.split("/")[0].split(":")[0] for h in live_hosts))
 
         if hosts and self._cmd.is_tool_available("nmap"):
             for host in hosts:
@@ -149,7 +148,7 @@ class FingerprintingModule(BaseModule):
             rate_limiter=self.rate_limiter,
             custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
         )
-        return client.get(url)
+        return client.try_request(url)
 
     async def _analyze_headers(self, url: str, response=None) -> dict:
         versions = []

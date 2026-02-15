@@ -210,7 +210,7 @@ class AuthTestingModule(BaseModule):
             rate_limiter=self.rate_limiter,
             custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
         )
-        return client.post(url, data={"username": username, "password": password})
+        return client.try_request(url, method="POST", data={"username": username, "password": password})
 
     def _http_get(self, url: str):
         from wstg_orchestrator.utils.http_utils import HttpClient
@@ -219,7 +219,7 @@ class AuthTestingModule(BaseModule):
             rate_limiter=self.rate_limiter,
             custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
         )
-        return client.get(url)
+        return client.try_request(url)
 
     def _is_login_success(self, resp) -> bool:
         if resp.status_code in [302, 303] and "location" in {k.lower() for k in resp.headers}:
