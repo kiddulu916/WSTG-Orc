@@ -23,21 +23,23 @@ class ScopeChecker:
 
     def is_in_scope(self, target: str) -> bool:
         target_lower = target.lower()
-        parsed = urlparse(
-            target_lower if "http://" or "https://" in target_lower else str(target_lower)
-            )
+        if "://" not in target_lower:
+            target_lower = "https://" + target_lower
+        parsed = urlparse(target_lower)
         hostname = parsed.hostname or target_lower
 
         # Check if IP is blacklisted
         if hostname in self.out_of_scope_ips:
             return False
 
-
         # Check blacklist (exact and wildcard)
         for oos in self.out_of_scope_urls:
             if fnmatch.fnmatch(hostname, oos):
                 return False
-            if hostname == oos:
+
+        # Check hostname belongs to base_domain (exact match or subdomain)
+        if self.base_domain:
+            if hostname != self.base_domain and not hostname.endswith("." + self.base_domain):
                 return False
 
         return True

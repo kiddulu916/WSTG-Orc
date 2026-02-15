@@ -56,6 +56,15 @@ class ConfigLoader:
             domains.append(self.base_domain)
         # Add wildcard domains
         domains.extend(self.wildcard_domains)
+        # Extract hostnames from in-scope URLs
+        for url in self.in_scope_urls:
+            if "://" in url:
+                parsed = urlparse(url)
+                hostname = parsed.hostname
+            else:
+                hostname = url.split("/")[0].split(":")[0]
+            if hostname:
+                domains.append(hostname)
 
         return list(dict.fromkeys(domains))
 
