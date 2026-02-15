@@ -1,4 +1,7 @@
 # tests/test_cli_handler.py
+import signal
+import threading
+
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -73,3 +76,67 @@ def test_cli_input_works_without_readline():
             reload(mod)
             result = mod.cli_input("prompt: ")
     assert result == "fallback"
+
+
+class TestSignalHandler:
+    def _make_handler(self, tmp_path):
+        """Helper to create a SignalHandler with a mock StateManager."""
+        from wstg_orchestrator.utils.cli_handler import SignalHandler
+        state = MagicMock()
+        handler = SignalHandler(
+            state_manager=state,
+            config_path=str(tmp_path / "config.yaml"),
+            state_path=str(tmp_path / "state.json"),
+            evidence_dir=str(tmp_path / "evidence"),
+        )
+        return handler, state
+
+    def test_initial_state_not_paused(self, tmp_path):
+        handler, _ = self._make_handler(tmp_path)
+        assert handler.is_paused() is False
+
+    def test_handle_sigint_sets_paused(self, tmp_path):
+        handler, state = self._make_handler(tmp_path)
+        with patch("builtins.input", return_value="n"):
+            handler.handle_sigint(signal.SIGINT, None)
+        assert handler.is_paused() is False  # resumed after "n"
+        state.save.assert_called()
+
+    def test_handle_sigint_abort_on_yes(self, tmp_path):
+        handler, state = self._make_handler(tmp_path)
+        with patch("builtins.input", return_value="y"):
+            with pytest.raises(SystemExit):
+                handler.handle_sigint(signal.SIGINT, None)
+        # save called at least twice: once on pause, once before exit
+        assert state.save.call_count >= 2
+
+    def test_handle_sigint_resume_on_no(self, tmp_path):
+        handler, state = self._make_handler(tmp_path)
+        with patch("builtins.input", return_value="n"):
+            handler.handle_sigint(signal.SIGINT, None)
+        assert handler.is_paused() is False
+        state.save.assert_called()
+
+    def test_resume_instructions_contain_paths(self, tmp_path, capsys):
+        handler, _ = self._make_handler(tmp_path)
+        with patch("builtins.input", return_value="y"):
+            with pytest.raises(SystemExit):
+                handler.handle_sigint(signal.SIGINT, None)
+        captured = capsys.readouterr()
+        assert "python main.py" in captured.out
+        assert str(tmp_path / "config.yaml") in captured.out
+        assert str(tmp_path / "state.json") in captured.out
+        assert str(tmp_path / "evidence") in captured.out
+
+    def test_register_installs_signal_handler(self, tmp_path):
+        handler, _ = self._make_handler(tmp_path)
+        with patch("signal.signal") as mock_signal:
+            handler.register()
+        mock_signal.assert_called_once_with(signal.SIGINT, handler.handle_sigint)
+
+    def test_force_exit_on_second_sigint_while_paused(self, tmp_path):
+        handler, state = self._make_handler(tmp_path)
+        handler._paused = True
+        handler._force_exit = True
+        with pytest.raises(SystemExit):
+            handler.handle_sigint(signal.SIGINT, None)
