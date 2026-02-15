@@ -18,7 +18,7 @@ from wstg_orchestrator.utils.parser_utils import (
 
 class ReconModule(BaseModule):
     PHASE_NAME = "reconnaissance"
-    SUBCATEGORIES = ["passive_osint", "url_harvesting", "live_host_validation", "parameter_harvesting"]
+    SUBCATEGORIES = ["asn_enumeration", "passive_osint", "url_harvesting", "live_host_validation", "parameter_harvesting"]
     EVIDENCE_SUBDIRS = ["tool_output", "parsed", "evidence", "screenshots"]
     TOOL_INSTALL_COMMANDS = {
         "amass": "go install -v github.com/owasp-amass/amass/v4/...@master",
@@ -35,6 +35,10 @@ class ReconModule(BaseModule):
         )
 
     async def execute(self):
+        if not self.should_skip_subcategory("asn_enumeration"):
+            await self._asn_enumeration()
+            self.mark_subcategory_complete("asn_enumeration")
+
         if not self.should_skip_subcategory("passive_osint"):
             await self._passive_osint()
             self.mark_subcategory_complete("passive_osint")
@@ -179,6 +183,44 @@ class ReconModule(BaseModule):
             all_cidrs.extend(cidrs_for_asn)
 
         return list(dict.fromkeys(all_cidrs))
+
+    async def _asn_enumeration(self):
+        """Discover ASNs for the target company and resolve their IP ranges."""
+        company_name = self.config.company_name
+        if not company_name:
+            self.logger.warning("No company_name configured, skipping ASN enumeration")
+            return
+
+        self.logger.info(f"Starting ASN enumeration for: {company_name}")
+
+        # Step 1: Discover ASNs via amass intel -org
+        result = await self._run_amass_intel_org(company_name)
+        if result.tool_missing or result.returncode != 0:
+            self.logger.warning("amass intel -org failed, skipping ASN enumeration")
+            return
+
+        parsed = self._parse_amass_org_output(result.stdout, company_name)
+        if not parsed:
+            self.logger.info("No ASNs found matching company name")
+            return
+
+        # Collect ASNs and any inline CIDRs
+        asns = list(dict.fromkeys(entry["asn"] for entry in parsed))
+        inline_cidrs = [entry["cidr"] for entry in parsed if entry["cidr"]]
+
+        self.state.enrich("asns", asns)
+        self.evidence.log_parsed("reconnaissance", "asns", asns)
+        self.logger.info(f"Found {len(asns)} ASNs: {', '.join(asns)}")
+
+        # Step 2: Look up IP ranges for each ASN
+        looked_up_cidrs = await self._lookup_asn_ip_ranges(asns)
+
+        # Merge inline + looked-up CIDRs, deduplicate
+        all_cidrs = list(dict.fromkeys(inline_cidrs + looked_up_cidrs))
+
+        self.state.enrich("ip_ranges", all_cidrs)
+        self.evidence.log_parsed("reconnaissance", "ip_ranges", all_cidrs)
+        self.logger.info(f"Found {len(all_cidrs)} IP ranges")
 
     async def _passive_osint(self):
         self.logger.info("Starting passive OSINT - subdomain enumeration")

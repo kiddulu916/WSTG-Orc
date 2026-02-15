@@ -82,6 +82,9 @@ async def test_execute_runs_url_harvesting_before_live_hosts(recon_module):
     """URL harvesting must run before live host validation."""
     call_order = []
 
+    async def mock_asn():
+        call_order.append("asn_enumeration")
+
     async def mock_passive():
         call_order.append("passive_osint")
 
@@ -94,11 +97,12 @@ async def test_execute_runs_url_harvesting_before_live_hosts(recon_module):
     async def mock_params():
         call_order.append("parameter_harvesting")
 
-    with patch.object(recon_module, '_passive_osint', side_effect=mock_passive):
-        with patch.object(recon_module, '_url_harvesting', side_effect=mock_harvest):
-            with patch.object(recon_module, '_live_host_validation', side_effect=mock_live):
-                with patch.object(recon_module, '_parameter_harvesting', side_effect=mock_params):
-                    await recon_module.execute()
+    with patch.object(recon_module, '_asn_enumeration', side_effect=mock_asn):
+        with patch.object(recon_module, '_passive_osint', side_effect=mock_passive):
+            with patch.object(recon_module, '_url_harvesting', side_effect=mock_harvest):
+                with patch.object(recon_module, '_live_host_validation', side_effect=mock_live):
+                    with patch.object(recon_module, '_parameter_harvesting', side_effect=mock_params):
+                        await recon_module.execute()
 
     assert call_order.index("url_harvesting") < call_order.index("live_host_validation")
 
@@ -335,3 +339,96 @@ async def test_run_whois_radb_missing_prompts_install(recon_module):
         with patch.object(recon_module, '_prompt_install_tool', return_value=True):
             result = await recon_module._run_whois_radb("AS12345")
     assert result.returncode == 0
+
+
+def test_subcategories_includes_asn_enumeration(recon_module):
+    """asn_enumeration is the first subcategory."""
+    assert recon_module.SUBCATEGORIES[0] == "asn_enumeration"
+
+
+@pytest.mark.asyncio
+async def test_asn_enumeration_full_flow(recon_module):
+    """Full ASN enumeration: amass org -> parse -> lookup ranges -> enrich state."""
+    org_result = MagicMock(
+        returncode=0, tool_missing=False,
+        stdout="AS394161, 12.0.0.0/8, Tesla, Inc.\nAS99999, 172.16.0.0/12, Unrelated Corp\n",
+    )
+    recon_module.config.company_name = "Tesla"
+
+    with patch.object(recon_module, '_run_amass_intel_org', new_callable=AsyncMock, return_value=org_result):
+        with patch.object(recon_module, '_lookup_asn_ip_ranges', new_callable=AsyncMock, return_value=["12.0.0.0/8", "10.0.0.0/16"]):
+            await recon_module._asn_enumeration()
+
+    # Check state.enrich was called with ASNs and IP ranges
+    enrich_calls = {call.args[0]: call.args[1] for call in recon_module.state.enrich.call_args_list}
+    assert "AS394161" in enrich_calls["asns"]
+    assert "AS99999" not in enrich_calls["asns"]
+    assert "12.0.0.0/8" in enrich_calls["ip_ranges"]
+    assert "10.0.0.0/16" in enrich_calls["ip_ranges"]
+
+
+@pytest.mark.asyncio
+async def test_asn_enumeration_includes_inline_cidrs(recon_module):
+    """CIDRs found inline in amass org output are included in ip_ranges."""
+    org_result = MagicMock(
+        returncode=0, tool_missing=False,
+        stdout="AS394161, 12.0.0.0/8, Tesla, Inc.\n",
+    )
+    recon_module.config.company_name = "Tesla"
+
+    with patch.object(recon_module, '_run_amass_intel_org', new_callable=AsyncMock, return_value=org_result):
+        with patch.object(recon_module, '_lookup_asn_ip_ranges', new_callable=AsyncMock, return_value=["10.0.0.0/16"]):
+            await recon_module._asn_enumeration()
+
+    enrich_calls = {}
+    for call in recon_module.state.enrich.call_args_list:
+        key = call.args[0]
+        enrich_calls.setdefault(key, []).extend(call.args[1])
+    # Both inline CIDR and looked-up CIDR should be present
+    assert "12.0.0.0/8" in enrich_calls["ip_ranges"]
+    assert "10.0.0.0/16" in enrich_calls["ip_ranges"]
+
+
+@pytest.mark.asyncio
+async def test_execute_runs_asn_enumeration_first(recon_module):
+    """asn_enumeration runs before passive_osint in execute()."""
+    call_order = []
+
+    async def mock_asn():
+        call_order.append("asn_enumeration")
+
+    async def mock_passive():
+        call_order.append("passive_osint")
+
+    async def mock_harvest():
+        call_order.append("url_harvesting")
+
+    async def mock_live():
+        call_order.append("live_host_validation")
+
+    async def mock_params():
+        call_order.append("parameter_harvesting")
+
+    with patch.object(recon_module, '_asn_enumeration', side_effect=mock_asn):
+        with patch.object(recon_module, '_passive_osint', side_effect=mock_passive):
+            with patch.object(recon_module, '_url_harvesting', side_effect=mock_harvest):
+                with patch.object(recon_module, '_live_host_validation', side_effect=mock_live):
+                    with patch.object(recon_module, '_parameter_harvesting', side_effect=mock_params):
+                        await recon_module.execute()
+
+    assert call_order[0] == "asn_enumeration"
+    assert call_order[1] == "passive_osint"
+
+
+@pytest.mark.asyncio
+async def test_asn_enumeration_skipped_when_amass_missing_and_declined(recon_module):
+    """When amass is missing and user declines install, no ASNs are enriched."""
+    missing_result = MagicMock(returncode=1, tool_missing=True, stdout="", stderr="")
+    recon_module.config.company_name = "Tesla"
+
+    with patch.object(recon_module, '_run_amass_intel_org', new_callable=AsyncMock, return_value=missing_result):
+        await recon_module._asn_enumeration()
+
+    # enrich should not have been called for asns
+    asn_calls = [c for c in recon_module.state.enrich.call_args_list if c.args[0] == "asns"]
+    assert len(asn_calls) == 0 or asn_calls[0].args[1] == []
