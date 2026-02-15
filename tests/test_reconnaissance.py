@@ -153,3 +153,44 @@ async def test_live_host_validation_includes_in_scope_urls(recon_module):
     assert "app.example.com" in probed_hosts
     assert "partner.com" in probed_hosts
     assert "extra.example.com" in probed_hosts
+
+
+def test_parse_amass_org_output_matches_company(recon_module):
+    """Lines containing the company name (case-insensitive substring) are matched."""
+    stdout = (
+        "AS394161, 12.0.0.0/8, Tesla, Inc.\n"
+        "AS12345, 10.0.0.0/16, Tesla Motors\n"
+        "AS99999, 172.16.0.0/12, Unrelated Corp\n"
+    )
+    results = recon_module._parse_amass_org_output(stdout, "Tesla")
+    asns = [r["asn"] for r in results]
+    assert "AS394161" in asns
+    assert "AS12345" in asns
+    assert "AS99999" not in asns
+
+
+def test_parse_amass_org_output_collects_cidrs(recon_module):
+    """CIDRs present on matching lines are collected."""
+    stdout = "AS394161, 12.0.0.0/8, Tesla, Inc.\n"
+    results = recon_module._parse_amass_org_output(stdout, "Tesla")
+    assert results[0]["cidr"] == "12.0.0.0/8"
+
+
+def test_parse_amass_org_output_missing_cidr(recon_module):
+    """Lines without a CIDR still return the ASN with cidr=None."""
+    stdout = "AS394161 -- Tesla, Inc.\n"
+    results = recon_module._parse_amass_org_output(stdout, "Tesla")
+    assert results[0]["asn"] == "AS394161"
+    assert results[0]["cidr"] is None
+
+
+def test_parse_amass_org_output_empty_input(recon_module):
+    """Empty or whitespace-only input returns empty list."""
+    assert recon_module._parse_amass_org_output("", "Tesla") == []
+    assert recon_module._parse_amass_org_output("  \n\n  ", "Tesla") == []
+
+
+def test_parse_amass_org_output_no_asn_token(recon_module):
+    """Lines without an AS\\d+ token are skipped."""
+    stdout = "Some random line, Tesla\n"
+    assert recon_module._parse_amass_org_output(stdout, "Tesla") == []

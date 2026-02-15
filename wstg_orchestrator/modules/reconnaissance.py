@@ -57,6 +57,31 @@ class ReconModule(BaseModule):
             domains = [self.config.base_domain]
         return domains
 
+    def _parse_amass_org_output(self, stdout: str, company_name: str) -> list[dict]:
+        """Parse amass intel -org output. Return list of {asn, cidr, org} dicts
+        for lines where org field contains company_name (case-insensitive)."""
+        results = []
+        company_lower = company_name.lower()
+        asn_re = re.compile(r'(AS\d+)')
+        cidr_re = re.compile(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2})')
+
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if company_lower not in line.lower():
+                continue
+            asn_match = asn_re.search(line)
+            if not asn_match:
+                continue
+            cidr_match = cidr_re.search(line)
+            results.append({
+                "asn": asn_match.group(1),
+                "cidr": cidr_match.group(1) if cidr_match else None,
+                "org": line,
+            })
+        return results
+
     async def _passive_osint(self):
         self.logger.info("Starting passive OSINT - subdomain enumeration")
         all_subdomains = []
