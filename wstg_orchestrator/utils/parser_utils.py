@@ -5,6 +5,13 @@ from html.parser import HTMLParser
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 
+def strip_scheme(url: str) -> str:
+    """Strip http:// or https:// from a URL, preserving everything else."""
+    if not url:
+        return url
+    return re.sub(r'^https?://', '', url)
+
+
 def extract_params_from_url(url: str) -> dict[str, str]:
     parsed = urlparse(url)
     params = parse_qs(parsed.query)

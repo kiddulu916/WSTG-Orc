@@ -8,6 +8,7 @@ from wstg_orchestrator.utils.parser_utils import (
     diff_responses,
     extract_forms_from_html,
     detect_id_patterns,
+    strip_scheme,
 )
 
 
@@ -65,3 +66,31 @@ def test_detect_id_patterns():
     result = detect_id_patterns(urls)
     assert any(r["type"] == "numeric" for r in result)
     assert any(r["type"] == "uuid" for r in result)
+
+
+def test_strip_scheme_https():
+    assert strip_scheme("https://example.com") == "example.com"
+
+
+def test_strip_scheme_http():
+    assert strip_scheme("http://example.com/path") == "example.com/path"
+
+
+def test_strip_scheme_no_scheme():
+    assert strip_scheme("example.com") == "example.com"
+
+
+def test_strip_scheme_preserves_path_and_query():
+    assert strip_scheme("https://example.com/api/v1?key=val") == "example.com/api/v1?key=val"
+
+
+def test_strip_scheme_preserves_port():
+    assert strip_scheme("http://example.com:8080/path") == "example.com:8080/path"
+
+
+def test_strip_scheme_preserves_subdomain():
+    assert strip_scheme("https://sub.example.com/path") == "sub.example.com/path"
+
+
+def test_strip_scheme_empty_string():
+    assert strip_scheme("") == ""
