@@ -12,7 +12,7 @@ def sample_config():
         "program_scope": {
             "company_name": "TestCorp",
             "base_domain": "testcorp.com",
-            "wildcard_urls": ["*.testcorp.com"],
+            "wildcard_urls": ["testcorp.com"],
             "in_scope_urls": ["app.testcorp.com", "api.testcorp.com"],
             "in_scope_ips": [],
             "out_of_scope_urls": ["admin.testcorp.com"],
@@ -96,69 +96,20 @@ def test_out_of_scope_attack_vectors(config_file):
     assert checker.is_attack_vector_allowed("sqli") is True
 
 
-def test_wildcard_domains(config_file):
-    config = ConfigLoader(config_file)
-    assert config.wildcard_urls == ["*.testcorp.com"]
-    assert config.wildcard_domains == ["testcorp.com"]
-
-
-def test_wildcard_domains_multiple():
-    """Test wildcard_domains strips '*.' from multiple wildcard entries."""
-    cfg = {
-        "program_scope": {
-            "company_name": "TestCorp",
-            "base_domain": "testcorp.com",
-            "wildcard_urls": ["*.testcorp.com", "*.api.testcorp.com", "*.staging.testcorp.com"],
-        },
-    }
-    fd, path = tempfile.mkstemp(suffix=".yaml")
-    os.close(fd)
-    with open(path, "w") as f:
-        yaml.dump(cfg, f)
-    try:
-        config = ConfigLoader(path)
-        assert config.wildcard_domains == ["testcorp.com", "api.testcorp.com", "staging.testcorp.com"]
-    finally:
-        os.remove(path)
-
-
-def test_wildcard_domains_deduplication():
-    """Test wildcard_domains deduplicates entries."""
-    cfg = {
-        "program_scope": {
-            "base_domain": "testcorp.com",
-            "wildcard_urls": ["*.testcorp.com", "*.testcorp.com"],
-        },
-    }
-    fd, path = tempfile.mkstemp(suffix=".yaml")
-    os.close(fd)
-    with open(path, "w") as f:
-        yaml.dump(cfg, f)
-    try:
-        config = ConfigLoader(path)
-        assert config.wildcard_domains == ["testcorp.com"]
-    finally:
-        os.remove(path)
-
-
 def test_enumeration_domains(config_file):
-    """Test enumeration_domains combines base_domain, wildcards, and in-scope URLs."""
     config = ConfigLoader(config_file)
-    # sample_config has base_domain=testcorp.com, wildcard_urls=[*.testcorp.com],
-    # in_scope_urls=[app.testcorp.com, api.testcorp.com]
     domains = config.enumeration_domains
     assert domains[0] == "testcorp.com"
-    assert "app.testcorp.com" in domains
-    assert "api.testcorp.com" in domains
+    # in_scope_urls should NOT be in enumeration_domains
+    assert "app.testcorp.com" not in domains
+    assert "api.testcorp.com" not in domains
 
 
 def test_enumeration_domains_deduplicates():
-    """Test enumeration_domains deduplicates across all sources."""
     cfg = {
         "program_scope": {
             "base_domain": "testcorp.com",
-            "wildcard_urls": ["*.testcorp.com"],
-            "in_scope_urls": ["testcorp.com", "https://app.testcorp.com/login"],
+            "wildcard_urls": ["testcorp.com", "testcorp.com"],
         },
     }
     fd, path = tempfile.mkstemp(suffix=".yaml")
@@ -168,24 +119,18 @@ def test_enumeration_domains_deduplicates():
     try:
         config = ConfigLoader(path)
         domains = config.enumeration_domains
-        # testcorp.com appears from base_domain, wildcard, and in_scope — should only be listed once
         assert domains.count("testcorp.com") == 1
-        assert "app.testcorp.com" in domains
     finally:
         os.remove(path)
 
 
-def test_enumeration_domains_with_full_urls():
-    """Test enumeration_domains extracts hostnames from full in-scope URLs."""
+def test_enumeration_domains_excludes_in_scope_urls():
+    """enumeration_domains should only combine base_domain + wildcard_urls, NOT in_scope_urls."""
     cfg = {
         "program_scope": {
             "base_domain": "testcorp.com",
-            "wildcard_urls": ["*.testcorp.com"],
-            "in_scope_urls": [
-                "https://portal.testcorp.com/dashboard",
-                "http://staging.testcorp.com:8080",
-                "partner-api.testcorp.com",
-            ],
+            "wildcard_urls": ["testcorp.com", "api.testcorp.com"],
+            "in_scope_urls": ["partner.com", "app.testcorp.com/dashboard"],
         },
     }
     fd, path = tempfile.mkstemp(suffix=".yaml")
@@ -196,8 +141,8 @@ def test_enumeration_domains_with_full_urls():
         config = ConfigLoader(path)
         domains = config.enumeration_domains
         assert "testcorp.com" in domains
-        assert "portal.testcorp.com" in domains
-        assert "staging.testcorp.com" in domains
-        assert "partner-api.testcorp.com" in domains
+        assert "api.testcorp.com" in domains
+        assert "partner.com" not in domains
+        assert "app.testcorp.com" not in domains
     finally:
         os.remove(path)

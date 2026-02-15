@@ -1,6 +1,5 @@
 # wstg_orchestrator/utils/config_loader.py
 import yaml
-from urllib.parse import urlparse
 from wstg_orchestrator.utils.scope_checker import ScopeChecker
 
 
@@ -34,38 +33,16 @@ class ConfigLoader:
         return self._scope.get("wildcard_urls", [])
 
     @property
-    def wildcard_domains(self) -> list[str]:
-        """Strip '*.' prefix from wildcard URLs for use with subdomain enumeration tools."""
-        domains = []
-        for url in self.wildcard_urls:
-            domain = url.lstrip("*.")
-            if domain:
-                domains.append(domain)
-        return list(dict.fromkeys(domains))
-
-    @property
     def enumeration_domains(self) -> list[str]:
         """
         Return all domains that should be enumerated for subdomains.
-        Combines base_domain, wildcard domains (with '*.' stripped),
-        and hostnames extracted from in_scope_urls. Deduplicated, order preserved.
+        Combines base_domain and wildcard_urls only. in_scope_urls are excluded.
+        Deduplicated, order preserved.
         """
         domains = []
-        # Always include base domain first
         if self.base_domain:
             domains.append(self.base_domain)
-        # Add wildcard domains
-        domains.extend(self.wildcard_domains)
-        # Extract hostnames from in-scope URLs
-        for url in self.in_scope_urls:
-            if "://" in url:
-                parsed = urlparse(url)
-                hostname = parsed.hostname
-            else:
-                hostname = url.split("/")[0].split(":")[0]
-            if hostname:
-                domains.append(hostname)
-
+        domains.extend(self.wildcard_urls)
         return list(dict.fromkeys(domains))
 
     @property
