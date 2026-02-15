@@ -149,6 +149,37 @@ class ReconModule(BaseModule):
             self.evidence.log_tool_output("reconnaissance", f"whois_radb_{asn}", result.stdout)
         return result
 
+    async def _lookup_asn_ip_ranges(self, asn_list: list[str]) -> list[str]:
+        """Look up IP ranges for each ASN. Try amass first, fall back to whois RADB."""
+        all_cidrs = []
+        cidr_re = re.compile(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2})')
+
+        for asn in asn_list:
+            cidrs_for_asn = []
+
+            # Try amass intel -asn first
+            result = await self._run_amass_intel_asn(asn)
+            if result.returncode == 0 and result.stdout.strip():
+                for line in result.stdout.splitlines():
+                    line = line.strip()
+                    match = cidr_re.search(line)
+                    if match:
+                        cidrs_for_asn.append(match.group(1))
+
+            # Fall back to whois RADB if amass returned nothing
+            if not cidrs_for_asn:
+                self.logger.info(f"amass returned no ranges for {asn}, trying whois RADB")
+                result = await self._run_whois_radb(asn)
+                if result.returncode == 0 and result.stdout.strip():
+                    cidrs_for_asn = self._parse_whois_radb_output(result.stdout)
+
+            if not cidrs_for_asn:
+                self.logger.warning(f"No IP ranges found for {asn}")
+
+            all_cidrs.extend(cidrs_for_asn)
+
+        return list(dict.fromkeys(all_cidrs))
+
     async def _passive_osint(self):
         self.logger.info("Starting passive OSINT - subdomain enumeration")
         all_subdomains = []

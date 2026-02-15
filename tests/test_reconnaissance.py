@@ -290,6 +290,42 @@ async def test_run_whois_radb_success(recon_module):
 
 
 @pytest.mark.asyncio
+async def test_lookup_asn_ip_ranges_uses_amass_first(recon_module):
+    """Uses amass intel -asn for IP ranges when available."""
+    amass_result = MagicMock(returncode=0, stdout="12.0.0.0/8\n10.0.0.0/16\n", tool_missing=False)
+
+    with patch.object(recon_module, '_run_amass_intel_asn', new_callable=AsyncMock, return_value=amass_result):
+        with patch.object(recon_module, '_run_whois_radb', new_callable=AsyncMock) as mock_whois:
+            ranges = await recon_module._lookup_asn_ip_ranges(["AS394161"])
+    assert "12.0.0.0/8" in ranges
+    assert "10.0.0.0/16" in ranges
+    mock_whois.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_lookup_asn_ip_ranges_falls_back_to_whois(recon_module):
+    """Falls back to whois when amass returns nothing."""
+    amass_result = MagicMock(returncode=1, stdout="", tool_missing=False)
+    whois_result = MagicMock(returncode=0, stdout="route:          10.0.0.0/16\n", tool_missing=False)
+
+    with patch.object(recon_module, '_run_amass_intel_asn', new_callable=AsyncMock, return_value=amass_result):
+        with patch.object(recon_module, '_run_whois_radb', new_callable=AsyncMock, return_value=whois_result):
+            ranges = await recon_module._lookup_asn_ip_ranges(["AS12345"])
+    assert "10.0.0.0/16" in ranges
+
+
+@pytest.mark.asyncio
+async def test_lookup_asn_ip_ranges_deduplicates(recon_module):
+    """Duplicate CIDRs across ASNs are deduplicated."""
+    result1 = MagicMock(returncode=0, stdout="10.0.0.0/16\n12.0.0.0/8\n", tool_missing=False)
+    result2 = MagicMock(returncode=0, stdout="10.0.0.0/16\n", tool_missing=False)
+
+    with patch.object(recon_module, '_run_amass_intel_asn', new_callable=AsyncMock, side_effect=[result1, result2]):
+        ranges = await recon_module._lookup_asn_ip_ranges(["AS1", "AS2"])
+    assert ranges.count("10.0.0.0/16") == 1
+
+
+@pytest.mark.asyncio
 async def test_run_whois_radb_missing_prompts_install(recon_module):
     """When whois is missing, prompts to install."""
     missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
