@@ -112,3 +112,25 @@ class HttpClient:
 
     def head(self, url: str, **kwargs) -> HttpResponse:
         return self.request("HEAD", url, **kwargs)
+
+    def try_request(
+        self,
+        url: str,
+        method: str = "GET",
+        **kwargs,
+    ) -> HttpResponse:
+        """Make a request to a scheme-stripped URL.
+
+        Tries https:// first, falls back to http:// on connection failure.
+        """
+        if "://" in url:
+            return self.request(method, url, **kwargs)
+
+        try:
+            return self.request(method, f"https://{url}", **kwargs)
+        except (requests.exceptions.SSLError,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout):
+            pass
+
+        return self.request(method, f"http://{url}", **kwargs)
