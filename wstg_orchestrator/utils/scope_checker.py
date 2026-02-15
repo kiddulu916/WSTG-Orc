@@ -1,8 +1,6 @@
 # wstg_orchestrator/utils/scope_checker.py
 import fnmatch
-import re
 from urllib.parse import urlparse
-
 
 class OutOfScopeError(Exception):
     pass
@@ -25,16 +23,15 @@ class ScopeChecker:
 
     def is_in_scope(self, target: str) -> bool:
         target_lower = target.lower()
-        parsed = urlparse(target_lower if "://" in target_lower else f"http://{target_lower}")
+        parsed = urlparse(
+            target_lower if "http://" or "https://" in target_lower else str(target_lower)
+            )
         hostname = parsed.hostname or target_lower
 
         # Check if IP is blacklisted
         if hostname in self.out_of_scope_ips:
             return False
 
-        # Must contain base domain
-        if self.base_domain not in target_lower:
-            return False
 
         # Check blacklist (exact and wildcard)
         for oos in self.out_of_scope_urls:

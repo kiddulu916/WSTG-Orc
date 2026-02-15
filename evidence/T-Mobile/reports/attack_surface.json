@@ -1,0 +1,13 @@
+{
+  "target_domain": "t-mobile.com",
+  "scan_id": "5d729c23-88a0-4a45-ac77-44efbae47ed6",
+  "subdomains": [],
+  "live_hosts": [],
+  "open_ports": [],
+  "technologies": [],
+  "frameworks": [],
+  "endpoints": [],
+  "parameters": [],
+  "api_endpoints": [],
+  "cloud_assets": []
+}

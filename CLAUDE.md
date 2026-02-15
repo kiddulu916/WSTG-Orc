@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## Project Overview
 
 WSTG-Orc is a Web Application Security Testing Orchestration Framework aligned with OWASP WSTG (Web Security Testing Guide). It orchestrates modular security testing phases from a black-box/bug bounty perspective with strict data chaining between modules, state persistence, and structured evidence collection.
@@ -14,64 +16,22 @@ WSTG-Orc is a Web Application Security Testing Orchestration Framework aligned w
 ## Common Commands
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the orchestrator (interactive setup)
-python main.py --new
-
-# Run the orchestrator (resume from existing config/state)
-python main.py -c config.yaml -s state.json -e evidence
-
-# Run all tests
-pytest tests/
-
-# Run a single test file
-pytest tests/test_state_manager.py
-
-# Run tests with verbose output
-pytest tests/ -v
-```
-
-## Project Structure
-
-```
-main.py                              # Entry point, CLI args, orchestrator
-wstg_orchestrator/
-  __init__.py
-  state_manager.py                   # Thread-safe state persistence (state.json)
-  scope_builder.py                   # Interactive scope configuration wizard
-  reporting.py                       # Report generation (JSON + executive summary)
-  modules/
-    base_module.py                   # Abstract base class for all modules
-    reconnaissance.py                # Passive OSINT, subdomain discovery, URL harvesting
-    fingerprinting.py                # Service versions, tech stack, CVE correlation
-    configuration_testing.py         # Directory brute force, 403 bypass, cloud storage
-    auth_testing.py                  # Username enum, default creds, lockout detection
-    authorization_testing.py         # IDOR, JWT, privilege escalation
-    session_testing.py               # Cookie flags, session fixation
-    input_validation.py              # SQLi, XSS, command injection
-    business_logic.py                # Workflow bypass, race conditions
-    api_testing.py                   # API discovery, BOLA, GraphQL introspection
-  utils/
-    config_loader.py                 # YAML config management
-    scope_checker.py                 # In-scope target validation
-    rate_limit_handler.py            # Adaptive rate limiting with backoff
-    http_utils.py                    # Centralized HTTP client
-    command_runner.py                # External tool execution wrapper
-    evidence_logger.py               # Structured evidence directory logging
-    callback_server.py               # Out-of-band callback listener
-    parser_utils.py                  # URL extraction, form parsing, ID detection
-tests/                               # pytest test files (23 files)
-docs/plans/                          # Design specs and implementation plans
+pip install -r requirements.txt          # Install dependencies
+python main.py --new                     # Interactive scope builder + run
+python main.py -c config.yaml -s state.json -e evidence  # Resume from existing state
+python main.py -v                        # Verbose logging (DEBUG level)
+pytest tests/                            # Run all tests
+pytest tests/test_state_manager.py       # Run a single test file
+pytest tests/ -v                         # Verbose test output
 ```
 
 ## Architecture
 
-All testing modules inherit from `BaseModule` and implement an async `execute()` method. Dependencies (StateManager, ConfigLoader, ScopeChecker, RateLimiter, EvidenceLogger, CallbackServer) are injected via the constructor.
+**Entry point:** `main.py` creates an `Orchestrator` which wires up all dependencies and registers modules. There is also `wstg_orchestrator/main.py` (untracked copy with identical content).
 
-**Execution order (some phases run in parallel):**
+**Module system:** All testing modules inherit from `BaseModule` (`wstg_orchestrator/modules/base_module.py`) and implement an async `execute()` method. Six dependencies are injected via constructor: StateManager, ConfigLoader, ScopeChecker, RateLimiter, EvidenceLogger, CallbackServer.
 
+**Execution order** (defined in `main.py::EXECUTION_ORDER` and `PARALLEL_GROUPS`):
 1. Reconnaissance
 2. Fingerprinting + Configuration Testing (parallel)
 3. Auth Testing
@@ -81,11 +41,13 @@ All testing modules inherit from `BaseModule` and implement an async `execute()`
 7. API Testing
 8. Report Generation
 
+**Data flow between phases:** Modules write discoveries to `StateManager` using `enrich(key, values)` — e.g., recon populates `discovered_subdomains` and `live_hosts`, which fingerprinting reads. State keys like `endpoints`, `parameters`, `auth_endpoints`, `api_endpoints`, `potential_idor_candidates`, `inferred_cves` chain data forward through subsequent phases.
+
 **Key patterns:**
 - **Scope enforcement:** Every HTTP request is validated via `ScopeChecker.is_in_scope()`. Out-of-scope targets raise `OutOfScopeError`.
-- **State persistence:** `StateManager` uses thread-safe atomic writes. Subcategory-level tracking enables granular resume.
+- **State persistence:** `StateManager` uses thread-safe atomic writes with `threading.Lock`. Subcategory-level tracking (`mark_subcategory_complete`) enables granular resume within a phase.
 - **Rate limiting:** Adaptive backoff on 429/WAF blocks (halve RPS), gradual recovery (RPS * 1.1 up to max).
-- **Tool degradation:** External tools are optional. Modules fall back to Python-native alternatives when tools are missing.
+- **Tool degradation:** External tools are optional. Modules fall back to Python-native alternatives when tools are missing (checked via `CommandRunner.is_tool_available()`).
 - **Evidence logging:** Timestamped files organized by phase into subdirectories (tool_output, raw_requests, raw_responses, parsed, evidence, potential_exploits, confirmed_exploits, screenshots).
 
 ## Coding Conventions
@@ -94,5 +56,4 @@ All testing modules inherit from `BaseModule` and implement an async `execute()`
 - `CommandResult` dataclass captures: returncode, stdout, stderr, tool_missing, timed_out.
 - `HttpResponse` dataclass captures full request/response with timing info.
 - Tests use pytest fixtures for temp directories and config files, `unittest.mock` / `AsyncMock` for isolation.
-- Config is read from a single `config.yaml` (generated by interactive scope builder).
-- State is persisted to `state.json` with atomic file operations under a single lock.
+- Config is read from a single `config.yaml` (generated by `ScopeBuilder`). State persists to `state.json`.

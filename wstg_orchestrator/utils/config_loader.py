@@ -45,8 +45,8 @@ class ConfigLoader:
 
     @property
     def enumeration_domains(self) -> list[str]:
-        """Return all domains that should be enumerated for subdomains.
-
+        """
+        Return all domains that should be enumerated for subdomains.
         Combines base_domain, wildcard domains (with '*.' stripped),
         and hostnames extracted from in_scope_urls. Deduplicated, order preserved.
         """
@@ -56,12 +56,7 @@ class ConfigLoader:
             domains.append(self.base_domain)
         # Add wildcard domains
         domains.extend(self.wildcard_domains)
-        # Extract hostnames from in-scope URLs
-        for url in self.in_scope_urls:
-            parsed = urlparse(url if "://" in url else f"http://{url}")
-            hostname = parsed.hostname
-            if hostname:
-                domains.append(hostname)
+
         return list(dict.fromkeys(domains))
 
     @property
