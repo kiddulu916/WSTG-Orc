@@ -140,3 +140,84 @@ class TestSignalHandler:
         handler._force_exit = True
         with pytest.raises(SystemExit):
             handler.handle_sigint(signal.SIGINT, None)
+
+
+class TestKeyListener:
+    def _make_listener(self, tmp_path):
+        from wstg_orchestrator.utils.cli_handler import KeyListener, SignalHandler
+        state = MagicMock()
+        state.get.return_value = []
+        state._state = {
+            "completed_phases": {
+                "reconnaissance": {"completed": True, "subcategories": {}},
+            },
+            "discovered_subdomains": ["a.example.com", "b.example.com"],
+            "live_hosts": ["a.example.com"],
+            "endpoints": ["/api/v1", "/login"],
+            "potential_vulnerabilities": [],
+            "confirmed_vulnerabilities": [],
+        }
+        signal_handler = SignalHandler(
+            state_manager=state,
+            config_path=str(tmp_path / "config.yaml"),
+            state_path=str(tmp_path / "state.json"),
+            evidence_dir=str(tmp_path / "evidence"),
+        )
+        orchestrator = MagicMock()
+        orchestrator.state = state
+        orchestrator.current_phase = "fingerprinting"
+        listener = KeyListener(orchestrator, signal_handler)
+        return listener, orchestrator, signal_handler, state
+
+    def test_render_menu_contains_all_options(self, tmp_path):
+        listener, _, _, _ = self._make_listener(tmp_path)
+        menu = listener.render_menu()
+        assert "View status" in menu
+        assert "Skip current phase" in menu
+        assert "Pause" in menu
+        assert "Abort" in menu
+        assert "Dismiss" in menu
+
+    def test_render_menu_shows_resume_when_paused(self, tmp_path):
+        listener, _, signal_handler, _ = self._make_listener(tmp_path)
+        signal_handler._paused = True
+        menu = listener.render_menu()
+        assert "Resume" in menu
+
+    def test_handle_selection_view_status(self, tmp_path, capsys):
+        listener, orch, _, _ = self._make_listener(tmp_path)
+        listener.handle_selection(1)
+        captured = capsys.readouterr()
+        assert "fingerprinting" in captured.out
+        assert "reconnaissance" in captured.out
+
+    def test_handle_selection_skip_phase(self, tmp_path):
+        listener, orch, _, _ = self._make_listener(tmp_path)
+        listener.handle_selection(2)
+        assert orch._skip_phase is True
+
+    def test_handle_selection_pause(self, tmp_path):
+        listener, _, signal_handler, state = self._make_listener(tmp_path)
+        listener.handle_selection(3)
+        assert signal_handler.is_paused() is True
+        state.save.assert_called()
+
+    def test_handle_selection_unpause(self, tmp_path):
+        listener, _, signal_handler, _ = self._make_listener(tmp_path)
+        signal_handler._paused = True
+        listener.handle_selection(3)
+        assert signal_handler.is_paused() is False
+
+    def test_handle_selection_abort(self, tmp_path):
+        listener, _, _, state = self._make_listener(tmp_path)
+        with pytest.raises(SystemExit):
+            listener.handle_selection(4)
+        state.save.assert_called()
+
+    def test_get_status_text(self, tmp_path, capsys):
+        listener, _, _, _ = self._make_listener(tmp_path)
+        listener.handle_selection(1)
+        captured = capsys.readouterr()
+        assert "Subdomains: 2" in captured.out
+        assert "Live hosts: 1" in captured.out
+        assert "Endpoints: 2" in captured.out
