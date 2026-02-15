@@ -112,6 +112,12 @@ def test_enrich_without_scope_checker_no_filtering(tmp_state_file):
     assert "anything.com" in sm.get("discovered_subdomains")
 
 
+def test_asns_and_ip_ranges_initialized(tmp_state_file):
+    sm = StateManager(tmp_state_file, target_domain="example.com", company_name="ExCorp")
+    assert sm.get("asns") == []
+    assert sm.get("ip_ranges") == []
+
+
 def test_enrich_filters_dict_values_by_url_key(tmp_state_file):
     scope = ScopeChecker(
         base_domain="example.com",

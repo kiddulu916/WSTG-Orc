@@ -16,6 +16,7 @@ class StateManager:
         "valid_usernames", "inferred_cves", "exposed_admin_paths",
         "pending_callbacks", "potential_vulnerabilities",
         "confirmed_vulnerabilities", "evidence_index",
+        "asns", "ip_ranges",
     ]
 
     LIST_KEYS = [
@@ -27,6 +28,7 @@ class StateManager:
         "inferred_cves", "exposed_admin_paths", "pending_callbacks",
         "potential_vulnerabilities", "confirmed_vulnerabilities",
         "evidence_index",
+        "asns", "ip_ranges",
     ]
 
     def __init__(self, state_file: str, target_domain: str = "", company_name: str = "", scope_checker=None):
