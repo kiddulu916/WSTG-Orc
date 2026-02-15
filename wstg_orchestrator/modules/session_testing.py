@@ -169,7 +169,7 @@ class SessionTestingModule(BaseModule):
             rate_limiter=self.rate_limiter,
             custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
         )
-        return client.get(url)
+        return client.try_request(url)
 
     def _http_post(self, url: str, data: dict | None = None):
         from wstg_orchestrator.utils.http_utils import HttpClient
@@ -178,4 +178,4 @@ class SessionTestingModule(BaseModule):
             rate_limiter=self.rate_limiter,
             custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
         )
-        return client.post(url, data=data)
+        return client.try_request(url, method="POST", data=data)

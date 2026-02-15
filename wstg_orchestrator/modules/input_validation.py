@@ -301,12 +301,17 @@ class InputValidationModule(BaseModule):
             custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
         )
         if method.upper() == "GET":
-            parsed = urlparse(url)
+            # Prepend scheme for urlparse, then strip it for try_request
+            parse_url = url if "://" in url else f"https://{url}"
+            parsed = urlparse(parse_url)
             params = parse_qs(parsed.query)
             params[param_name] = payload
             new_query = urlencode(params, doseq=True)
-            test_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path,
-                                   parsed.params, new_query, parsed.fragment))
-            return client.get(test_url)
+            # Reconstruct without scheme for try_request
+            path = parsed.path or "/"
+            test_url = f"{parsed.hostname}{':' + str(parsed.port) if parsed.port and parsed.port not in (80, 443) else ''}{path}"
+            if new_query:
+                test_url += f"?{new_query}"
+            return client.try_request(test_url)
         else:
-            return client.post(url, data={param_name: payload})
+            return client.try_request(url, method="POST", data={param_name: payload})

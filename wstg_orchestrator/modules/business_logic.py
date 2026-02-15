@@ -161,12 +161,17 @@ class BusinessLogicModule(BaseModule):
                 self.logger.debug(f"Race condition test failed for {endpoint}: {e}")
 
     def _send_concurrent(self, url: str, count: int = 10):
-        import requests as req_lib
+        from wstg_orchestrator.utils.http_utils import HttpClient
         headers = self.config.custom_headers if hasattr(self.config, 'custom_headers') else {}
 
         def send_one(_):
             try:
-                return req_lib.post(url, headers=headers, timeout=10)
+                client = HttpClient(
+                    scope_checker=self.scope,
+                    rate_limiter=self.rate_limiter,
+                    custom_headers=headers,
+                )
+                return client.try_request(url, method="POST")
             except Exception:
                 return None
 
@@ -181,7 +186,7 @@ class BusinessLogicModule(BaseModule):
             rate_limiter=self.rate_limiter,
             custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
         )
-        return client.get(url)
+        return client.try_request(url)
 
     def _http_post(self, url: str, data: dict | None = None):
         from wstg_orchestrator.utils.http_utils import HttpClient
@@ -190,4 +195,4 @@ class BusinessLogicModule(BaseModule):
             rate_limiter=self.rate_limiter,
             custom_headers=self.config.custom_headers if hasattr(self.config, 'custom_headers') else {},
         )
-        return client.post(url, data=data)
+        return client.try_request(url, method="POST", data=data)
