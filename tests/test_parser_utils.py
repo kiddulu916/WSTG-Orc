@@ -10,6 +10,7 @@ from wstg_orchestrator.utils.parser_utils import (
     detect_id_patterns,
     strip_scheme,
     strip_wildcard_prefix,
+    parse_url_components,
 )
 
 
@@ -111,3 +112,38 @@ def test_strip_wildcard_prefix_nested():
 
 def test_strip_wildcard_prefix_with_scheme():
     assert strip_wildcard_prefix("https://*.example.com") == "example.com"
+
+
+def test_parse_url_components_full():
+    result = parse_url_components("https://api.example.com/v1/users?id=123")
+    assert result["hostname"] == "api.example.com"
+    assert result["path"] == "api.example.com/v1/users"
+    assert result["full"] == "api.example.com/v1/users?id=123"
+    assert result["has_query"] is True
+
+def test_parse_url_components_no_query():
+    result = parse_url_components("https://example.com/docs")
+    assert result["hostname"] == "example.com"
+    assert result["path"] == "example.com/docs"
+    assert result["full"] == "example.com/docs"
+    assert result["has_query"] is False
+
+def test_parse_url_components_bare_hostname():
+    result = parse_url_components("example.com")
+    assert result["hostname"] == "example.com"
+    assert result["path"] == "example.com"
+    assert result["full"] == "example.com"
+    assert result["has_query"] is False
+
+def test_parse_url_components_no_scheme():
+    result = parse_url_components("api.example.com/v1/users?id=123&name=test")
+    assert result["hostname"] == "api.example.com"
+    assert result["path"] == "api.example.com/v1/users"
+    assert result["full"] == "api.example.com/v1/users?id=123&name=test"
+    assert result["has_query"] is True
+
+def test_parse_url_components_root_path():
+    result = parse_url_components("https://example.com/")
+    assert result["hostname"] == "example.com"
+    assert result["path"] == "example.com"
+    assert result["has_query"] is False

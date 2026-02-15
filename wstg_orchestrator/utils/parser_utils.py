@@ -20,6 +20,47 @@ def strip_wildcard_prefix(url: str) -> str:
     return result
 
 
+def parse_url_components(url: str) -> dict:
+    """Parse a URL into hostname, path (no query), and full (with query).
+
+    All results are scheme-stripped. Returns:
+        hostname: bare hostname (e.g., "api.example.com")
+        path: hostname + path without query (e.g., "api.example.com/v1/users")
+        full: hostname + path + query (e.g., "api.example.com/v1/users?id=123")
+        has_query: True if URL has query string parameters
+    """
+    stripped = strip_scheme(url)
+    if not stripped:
+        return {"hostname": "", "path": "", "full": "", "has_query": False}
+
+    # Use urlparse with a scheme to get reliable parsing
+    to_parse = url if "://" in url else f"https://{url}"
+    parsed = urlparse(to_parse)
+
+    hostname = parsed.hostname or ""
+    path_part = parsed.path.rstrip("/")
+    query = parsed.query
+
+    # Build path: hostname + path (no trailing slash, no query)
+    if path_part and path_part != "/":
+        path = f"{hostname}{path_part}"
+    else:
+        path = hostname
+
+    # Build full: hostname + path + query
+    if query:
+        full = f"{path}?{query}"
+    else:
+        full = path
+
+    return {
+        "hostname": hostname,
+        "path": path,
+        "full": full,
+        "has_query": bool(query),
+    }
+
+
 def extract_params_from_url(url: str) -> dict[str, str]:
     parsed = urlparse(url)
     params = parse_qs(parsed.query)
