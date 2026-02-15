@@ -30,7 +30,7 @@ class ReconModule(BaseModule):
         self._cmd = CommandRunner(
             tool_configs={
                 name: self.config.get_tool_config(name)
-                for name in ["subfinder", "amass", "gau", "httpx"]
+                for name in ["subfinder", "amass", "gau", "httpx", "whois"]
             }
         )
 
@@ -134,6 +134,19 @@ class ReconModule(BaseModule):
         result = self._cmd.run("amass", ["intel", "-asn", asn], timeout=120)
         if result.returncode == 0 and result.stdout.strip():
             self.evidence.log_tool_output("reconnaissance", f"amass_intel_asn_{asn}", result.stdout)
+        return result
+
+    async def _run_whois_radb(self, asn: str):
+        """Run whois against RADB to look up IP ranges for an ASN."""
+        self.logger.info(f"Running whois RADB lookup for: {asn}")
+        result = self._cmd.run("whois", ["-h", "whois.radb.net", "--", f"-i origin {asn}"], timeout=30)
+        if result.tool_missing:
+            if self._prompt_install_tool("whois", self.TOOL_INSTALL_COMMANDS["whois"]):
+                result = self._cmd.run("whois", ["-h", "whois.radb.net", "--", f"-i origin {asn}"], timeout=30)
+            else:
+                return result
+        if result.returncode == 0 and result.stdout.strip():
+            self.evidence.log_tool_output("reconnaissance", f"whois_radb_{asn}", result.stdout)
         return result
 
     async def _passive_osint(self):

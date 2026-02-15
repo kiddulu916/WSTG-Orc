@@ -274,3 +274,28 @@ async def test_run_amass_intel_asn_success(recon_module):
     with patch.object(recon_module._cmd, 'run', return_value=mock_result):
         result = await recon_module._run_amass_intel_asn("AS394161")
     assert result.stdout == mock_result.stdout
+
+
+@pytest.mark.asyncio
+async def test_run_whois_radb_success(recon_module):
+    """whois RADB returns route lines."""
+    mock_result = MagicMock()
+    mock_result.tool_missing = False
+    mock_result.returncode = 0
+    mock_result.stdout = "route:          12.0.0.0/8\norigin:         AS394161\n"
+
+    with patch.object(recon_module._cmd, 'run', return_value=mock_result):
+        result = await recon_module._run_whois_radb("AS394161")
+    assert result.returncode == 0
+
+
+@pytest.mark.asyncio
+async def test_run_whois_radb_missing_prompts_install(recon_module):
+    """When whois is missing, prompts to install."""
+    missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
+    success = MagicMock(tool_missing=False, returncode=0, stdout="route: 10.0.0.0/8\n", stderr="")
+
+    with patch.object(recon_module._cmd, 'run', side_effect=[missing, success]):
+        with patch.object(recon_module, '_prompt_install_tool', return_value=True):
+            result = await recon_module._run_whois_radb("AS12345")
+    assert result.returncode == 0
