@@ -234,3 +234,43 @@ def test_prompt_install_tool_declined(mock_input, recon_module):
     """When user declines, returns False without running install."""
     result = recon_module._prompt_install_tool("amass", "go install -v github.com/owasp-amass/amass/v4/...@master")
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_run_amass_intel_org_success(recon_module):
+    """Successful amass intel -org returns parsed results."""
+    mock_result = MagicMock()
+    mock_result.tool_missing = False
+    mock_result.returncode = 0
+    mock_result.stdout = "AS394161, 12.0.0.0/8, Tesla, Inc.\n"
+
+    recon_module.config.company_name = "Tesla"
+    with patch.object(recon_module._cmd, 'run', return_value=mock_result):
+        result = await recon_module._run_amass_intel_org("Tesla")
+    assert result.stdout == mock_result.stdout
+
+
+@pytest.mark.asyncio
+async def test_run_amass_intel_org_missing_prompts_install(recon_module):
+    """When amass is missing, prompts to install."""
+    missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
+    success = MagicMock(tool_missing=False, returncode=0, stdout="AS1, 10.0.0.0/8, Tesla\n", stderr="")
+
+    recon_module.config.company_name = "Tesla"
+    with patch.object(recon_module._cmd, 'run', side_effect=[missing, success]):
+        with patch.object(recon_module, '_prompt_install_tool', return_value=True):
+            result = await recon_module._run_amass_intel_org("Tesla")
+    assert result.returncode == 0
+
+
+@pytest.mark.asyncio
+async def test_run_amass_intel_asn_success(recon_module):
+    """Successful amass intel -asn returns CommandResult."""
+    mock_result = MagicMock()
+    mock_result.tool_missing = False
+    mock_result.returncode = 0
+    mock_result.stdout = "12.0.0.0/8\n10.0.0.0/16\n"
+
+    with patch.object(recon_module._cmd, 'run', return_value=mock_result):
+        result = await recon_module._run_amass_intel_asn("AS394161")
+    assert result.stdout == mock_result.stdout

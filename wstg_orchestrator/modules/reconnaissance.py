@@ -20,6 +20,10 @@ class ReconModule(BaseModule):
     PHASE_NAME = "reconnaissance"
     SUBCATEGORIES = ["passive_osint", "url_harvesting", "live_host_validation", "parameter_harvesting"]
     EVIDENCE_SUBDIRS = ["tool_output", "parsed", "evidence", "screenshots"]
+    TOOL_INSTALL_COMMANDS = {
+        "amass": "go install -v github.com/owasp-amass/amass/v4/...@master",
+        "whois": "apt install whois",
+    }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -110,6 +114,27 @@ class ReconModule(BaseModule):
         except Exception as e:
             self.logger.error(f"Error installing {tool_name}: {e}")
         return False
+
+    async def _run_amass_intel_org(self, company_name: str):
+        """Run amass intel -org to discover ASNs for a company."""
+        self.logger.info(f"Running amass intel -org for: {company_name}")
+        result = self._cmd.run("amass", ["intel", "-org", company_name], timeout=300)
+        if result.tool_missing:
+            if self._prompt_install_tool("amass", self.TOOL_INSTALL_COMMANDS["amass"]):
+                result = self._cmd.run("amass", ["intel", "-org", company_name], timeout=300)
+            else:
+                return result
+        if result.returncode == 0 and result.stdout.strip():
+            self.evidence.log_tool_output("reconnaissance", "amass_intel_org", result.stdout)
+        return result
+
+    async def _run_amass_intel_asn(self, asn: str):
+        """Run amass intel -asn to get IP ranges for an ASN."""
+        self.logger.info(f"Running amass intel -asn for: {asn}")
+        result = self._cmd.run("amass", ["intel", "-asn", asn], timeout=120)
+        if result.returncode == 0 and result.stdout.strip():
+            self.evidence.log_tool_output("reconnaissance", f"amass_intel_asn_{asn}", result.stdout)
+        return result
 
     async def _passive_osint(self):
         self.logger.info("Starting passive OSINT - subdomain enumeration")
