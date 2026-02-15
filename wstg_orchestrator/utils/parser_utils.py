@@ -12,6 +12,14 @@ def strip_scheme(url: str) -> str:
     return re.sub(r'^https?://', '', url)
 
 
+def strip_wildcard_prefix(url: str) -> str:
+    """Strip http(s):// scheme and *. wildcard prefix from a URL."""
+    result = strip_scheme(url)
+    if result.startswith("*."):
+        result = result[2:]
+    return result
+
+
 def extract_params_from_url(url: str) -> dict[str, str]:
     parsed = urlparse(url)
     params = parse_qs(parsed.query)

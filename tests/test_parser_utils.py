@@ -9,6 +9,7 @@ from wstg_orchestrator.utils.parser_utils import (
     extract_forms_from_html,
     detect_id_patterns,
     strip_scheme,
+    strip_wildcard_prefix,
 )
 
 
@@ -94,3 +95,19 @@ def test_strip_scheme_preserves_subdomain():
 
 def test_strip_scheme_empty_string():
     assert strip_scheme("") == ""
+
+
+def test_strip_wildcard_prefix_standard():
+    assert strip_wildcard_prefix("*.example.com") == "example.com"
+
+
+def test_strip_wildcard_prefix_no_wildcard():
+    assert strip_wildcard_prefix("example.com") == "example.com"
+
+
+def test_strip_wildcard_prefix_nested():
+    assert strip_wildcard_prefix("*.api.example.com") == "api.example.com"
+
+
+def test_strip_wildcard_prefix_with_scheme():
+    assert strip_wildcard_prefix("https://*.example.com") == "example.com"
