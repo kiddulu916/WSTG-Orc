@@ -4,7 +4,7 @@ import tempfile
 import pytest
 import yaml
 from unittest.mock import patch, MagicMock, AsyncMock
-from wstg_orchestrator.main import Orchestrator
+from main import Orchestrator
 
 
 @pytest.fixture
