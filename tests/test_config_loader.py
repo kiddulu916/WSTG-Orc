@@ -94,3 +94,48 @@ def test_out_of_scope_attack_vectors(config_file):
     checker = config.create_scope_checker()
     assert checker.is_attack_vector_allowed("dos") is False
     assert checker.is_attack_vector_allowed("sqli") is True
+
+
+def test_wildcard_domains(config_file):
+    config = ConfigLoader(config_file)
+    assert config.wildcard_urls == ["*.testcorp.com"]
+    assert config.wildcard_domains == ["testcorp.com"]
+
+
+def test_wildcard_domains_multiple():
+    """Test wildcard_domains strips '*.' from multiple wildcard entries."""
+    cfg = {
+        "program_scope": {
+            "company_name": "TestCorp",
+            "base_domain": "testcorp.com",
+            "wildcard_urls": ["*.testcorp.com", "*.api.testcorp.com", "*.staging.testcorp.com"],
+        },
+    }
+    fd, path = tempfile.mkstemp(suffix=".yaml")
+    os.close(fd)
+    with open(path, "w") as f:
+        yaml.dump(cfg, f)
+    try:
+        config = ConfigLoader(path)
+        assert config.wildcard_domains == ["testcorp.com", "api.testcorp.com", "staging.testcorp.com"]
+    finally:
+        os.remove(path)
+
+
+def test_wildcard_domains_deduplication():
+    """Test wildcard_domains deduplicates entries."""
+    cfg = {
+        "program_scope": {
+            "base_domain": "testcorp.com",
+            "wildcard_urls": ["*.testcorp.com", "*.testcorp.com"],
+        },
+    }
+    fd, path = tempfile.mkstemp(suffix=".yaml")
+    os.close(fd)
+    with open(path, "w") as f:
+        yaml.dump(cfg, f)
+    try:
+        config = ConfigLoader(path)
+        assert config.wildcard_domains == ["testcorp.com"]
+    finally:
+        os.remove(path)

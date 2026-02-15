@@ -33,6 +33,16 @@ class ConfigLoader:
         return self._scope.get("wildcard_urls", [])
 
     @property
+    def wildcard_domains(self) -> list[str]:
+        """Strip '*.' prefix from wildcard URLs for use with subdomain enumeration tools."""
+        domains = []
+        for url in self.wildcard_urls:
+            domain = url.lstrip("*.")
+            if domain:
+                domains.append(domain)
+        return list(dict.fromkeys(domains))
+
+    @property
     def in_scope_urls(self) -> list:
         return self._scope.get("in_scope_urls", [])
 
