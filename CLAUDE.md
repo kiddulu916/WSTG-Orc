@@ -43,12 +43,15 @@ pytest tests/ -v                         # Verbose test output
 
 **Data flow between phases:** Modules write discoveries to `StateManager` using `enrich(key, values)` — e.g., recon populates `discovered_subdomains` and `live_hosts`, which fingerprinting reads. State keys like `endpoints`, `parameters`, `auth_endpoints`, `api_endpoints`, `potential_idor_candidates`, `inferred_cves` chain data forward through subsequent phases.
 
+**CLI handler:** `wstg_orchestrator/utils/cli_handler.py` provides three components: `SignalHandler` (Ctrl+C pause/resume/abort with state persistence), `KeyListener` (daemon thread reading keypresses for `?` hotkey menu overlay during scans), and `cli_input()` (readline-enhanced `input()` replacement with arrow key support). The `KeyListener` uses `tty`/`termios` for raw mode and restores terminal settings via triple redundancy (stop method, finally block, atexit).
+
 **Key patterns:**
 - **Scope enforcement:** Every HTTP request is validated via `ScopeChecker.is_in_scope()`. Out-of-scope targets raise `OutOfScopeError`.
 - **State persistence:** `StateManager` uses thread-safe atomic writes with `threading.Lock`. Subcategory-level tracking (`mark_subcategory_complete`) enables granular resume within a phase.
 - **Rate limiting:** Adaptive backoff on 429/WAF blocks (halve RPS), gradual recovery (RPS * 1.1 up to max).
 - **Tool degradation:** External tools are optional. Modules fall back to Python-native alternatives when tools are missing (checked via `CommandRunner.is_tool_available()`).
 - **Evidence logging:** Timestamped files organized by phase into subdirectories (tool_output, raw_requests, raw_responses, parsed, evidence, potential_exploits, confirmed_exploits, screenshots).
+- **Graceful interrupts:** Ctrl+C pauses the scan between phases, saves state immediately, and prompts to abort or resume. Aborting prints the exact `python main.py -c ... -s ... -e ...` command to resume. A `?` hotkey opens a menu overlay during scans with: view status, skip phase, pause/resume, abort.
 
 ## Coding Conventions
 
