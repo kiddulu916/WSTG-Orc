@@ -30,7 +30,7 @@ def test_build_config_from_inputs():
 
     assert config["program_scope"]["company_name"] == "TestCorp"
     assert config["program_scope"]["base_domain"] == "testcorp.com"
-    assert config["program_scope"]["wildcard_urls"] == ["*.testcorp.com", "*.api.testcorp.com"]
+    assert config["program_scope"]["wildcard_urls"] == ["testcorp.com", "api.testcorp.com"]
     assert "app.testcorp.com" in config["program_scope"]["in_scope_urls"]
     assert "admin.testcorp.com" in config["program_scope"]["out_of_scope_urls"]
     assert "dos" in config["program_scope"]["out_of_scope_attack_vectors"]
@@ -60,7 +60,7 @@ def test_build_config_wildcard_default_fallback():
         builder = ScopeBuilder()
         config = builder.build()
 
-    assert config["program_scope"]["wildcard_urls"] == ["*.testcorp.com"]
+    assert config["program_scope"]["wildcard_urls"] == ["testcorp.com"]
 
 
 def test_save_config():
@@ -74,3 +74,62 @@ def test_save_config():
         with open(path) as f:
             loaded = yaml.safe_load(f)
         assert loaded["program_scope"]["company_name"] == "Test"
+
+
+def test_build_strips_scheme_from_base_domain():
+    inputs = iter([
+        "TestCorp",
+        "https://testcorp.com",  # base domain WITH scheme
+        "", "", "", "", "", "", "", "", "", "", "", "",
+    ])
+    with patch("builtins.input", lambda prompt="": next(inputs)):
+        config = ScopeBuilder().build()
+    assert config["program_scope"]["base_domain"] == "testcorp.com"
+
+
+def test_build_strips_scheme_and_wildcard_from_wildcard_urls():
+    inputs = iter([
+        "TestCorp", "testcorp.com",
+        "https://*.testcorp.com, http://*.api.testcorp.com",
+        "", "", "", "", "", "", "", "", "", "", "",
+    ])
+    with patch("builtins.input", lambda prompt="": next(inputs)):
+        config = ScopeBuilder().build()
+    assert config["program_scope"]["wildcard_urls"] == ["testcorp.com", "api.testcorp.com"]
+
+
+def test_build_wildcard_default_stripped():
+    inputs = iter([
+        "TestCorp", "testcorp.com",
+        "",  # empty -> default
+        "", "", "", "", "", "", "", "", "", "", "",
+    ])
+    with patch("builtins.input", lambda prompt="": next(inputs)):
+        config = ScopeBuilder().build()
+    assert config["program_scope"]["wildcard_urls"] == ["testcorp.com"]
+
+
+def test_build_strips_scheme_from_in_scope_urls():
+    inputs = iter([
+        "TestCorp", "testcorp.com", "",
+        "https://app.testcorp.com/dashboard, http://partner.com",
+        "", "", "", "", "", "", "", "", "", "",
+    ])
+    with patch("builtins.input", lambda prompt="": next(inputs)):
+        config = ScopeBuilder().build()
+    assert config["program_scope"]["in_scope_urls"] == [
+        "app.testcorp.com/dashboard", "partner.com"
+    ]
+
+
+def test_build_strips_scheme_from_out_of_scope_urls():
+    inputs = iter([
+        "TestCorp", "testcorp.com", "", "", "",
+        "https://admin.testcorp.com/panel, *.internal.testcorp.com",
+        "", "", "", "", "", "", "", "",
+    ])
+    with patch("builtins.input", lambda prompt="": next(inputs)):
+        config = ScopeBuilder().build()
+    assert config["program_scope"]["out_of_scope_urls"] == [
+        "admin.testcorp.com/panel", "*.internal.testcorp.com"
+    ]

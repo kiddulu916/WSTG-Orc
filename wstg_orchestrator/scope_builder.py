@@ -1,6 +1,7 @@
 # wstg_orchestrator/scope_builder.py
 import yaml
 from wstg_orchestrator.utils.cli_handler import cli_input
+from wstg_orchestrator.utils.parser_utils import strip_scheme, strip_wildcard_prefix
 
 
 class ScopeBuilder:
@@ -8,23 +9,32 @@ class ScopeBuilder:
         print("\n=== WSTG Orchestrator - Scope Builder ===\n")
 
         company_name = cli_input("Company name: ").strip()
-        base_domain = cli_input("Base domain (e.g., example.com): ").strip()
+        base_domain = strip_scheme(cli_input("Base domain (e.g., example.com): ").strip())
 
-        wildcard_urls = self._parse_list(
-            cli_input("Wildcard URLs (e.g., *.example.com, *.sub.example.com; comma-separated, or empty): ")
-        )
+        wildcard_urls = [
+            strip_wildcard_prefix(item)
+            for item in self._parse_list(
+                cli_input("Wildcard URLs (e.g., *.example.com, *.sub.example.com; comma-separated, or empty): ")
+            )
+        ]
         if not wildcard_urls:
-            wildcard_urls = [f"*.{base_domain}"]
+            wildcard_urls = [base_domain]
 
-        in_scope_urls = self._parse_list(
-            cli_input("In-scope URLs (comma-separated, or empty): ")
-        )
+        in_scope_urls = [
+            strip_scheme(item)
+            for item in self._parse_list(
+                cli_input("In-scope URLs (comma-separated, or empty): ")
+            )
+        ]
         in_scope_ips = self._parse_list(
             cli_input("In-scope IPs (comma-separated, or empty): ")
         )
-        out_of_scope_urls = self._parse_list(
-            cli_input("Out-of-scope URLs (comma-separated, or empty): ")
-        )
+        out_of_scope_urls = [
+            strip_scheme(item)
+            for item in self._parse_list(
+                cli_input("Out-of-scope URLs (comma-separated, or empty): ")
+            )
+        ]
         out_of_scope_ips = self._parse_list(
             cli_input("Out-of-scope IPs (comma-separated, or empty): ")
         )
