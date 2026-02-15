@@ -73,7 +73,11 @@ class ScopeChecker:
         for pattern in self.out_of_scope_urls:
             # Type 3: Path component wildcard - */segment/*
             if pattern.startswith("*/"):
-                segment = pattern.strip("*").strip("/")
+                segment = pattern
+                if segment.startswith("*/"):
+                    segment = segment[2:]
+                if segment.endswith("/*"):
+                    segment = segment[:-2]
                 if segment and f"/{segment}/" in path:
                     return True
                 if segment and path.rstrip("/").endswith(f"/{segment}"):
