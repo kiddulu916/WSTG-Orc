@@ -432,3 +432,29 @@ async def test_asn_enumeration_skipped_when_amass_missing_and_declined(recon_mod
     # enrich should not have been called for asns
     asn_calls = [c for c in recon_module.state.enrich.call_args_list if c.args[0] == "asns"]
     assert len(asn_calls) == 0 or asn_calls[0].args[1] == []
+
+
+@pytest.mark.asyncio
+async def test_asn_enumeration_skips_without_company_name(recon_module):
+    """ASN enumeration is skipped when company_name is empty."""
+    recon_module.config.company_name = ""
+    await recon_module._asn_enumeration()
+    assert recon_module.state.enrich.call_count == 0
+
+
+def test_parse_amass_org_output_ipv6_cidr(recon_module):
+    """IPv6 CIDRs in amass org output are captured."""
+    stdout = "AS394161, 2001:db8::/32, Tesla, Inc.\n"
+    results = recon_module._parse_amass_org_output(stdout, "Tesla")
+    assert results[0]["cidr"] == "2001:db8::/32"
+
+
+@pytest.mark.asyncio
+async def test_lookup_asn_ip_ranges_ipv6(recon_module):
+    """IPv6 CIDRs from amass intel -asn are captured."""
+    amass_result = MagicMock(returncode=0, stdout="2001:db8::/32\n10.0.0.0/16\n", tool_missing=False)
+
+    with patch.object(recon_module, '_run_amass_intel_asn', new_callable=AsyncMock, return_value=amass_result):
+        ranges = await recon_module._lookup_asn_ip_ranges(["AS1"])
+    assert "2001:db8::/32" in ranges
+    assert "10.0.0.0/16" in ranges

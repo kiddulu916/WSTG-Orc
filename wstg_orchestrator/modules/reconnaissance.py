@@ -1,6 +1,7 @@
 # wstg_orchestrator/modules/reconnaissance.py
 import asyncio
 import re
+import shlex
 import subprocess as _subprocess
 from urllib.parse import urlparse, parse_qs
 
@@ -20,6 +21,10 @@ class ReconModule(BaseModule):
     PHASE_NAME = "reconnaissance"
     SUBCATEGORIES = ["asn_enumeration", "passive_osint", "url_harvesting", "live_host_validation", "parameter_harvesting"]
     EVIDENCE_SUBDIRS = ["tool_output", "parsed", "evidence", "screenshots"]
+    _CIDR_RE = re.compile(
+        r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}'  # IPv4
+        r'|[0-9a-fA-F:]+/\d{1,3})'                        # IPv6
+    )
     TOOL_INSTALL_COMMANDS = {
         "amass": "go install -v github.com/owasp-amass/amass/v4/...@master",
         "whois": "apt install whois",
@@ -73,7 +78,6 @@ class ReconModule(BaseModule):
         results = []
         company_lower = company_name.lower()
         asn_re = re.compile(r'(AS\d+)')
-        cidr_re = re.compile(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2})')
 
         for line in stdout.splitlines():
             line = line.strip()
@@ -84,7 +88,7 @@ class ReconModule(BaseModule):
             asn_match = asn_re.search(line)
             if not asn_match:
                 continue
-            cidr_match = cidr_re.search(line)
+            cidr_match = self._CIDR_RE.search(line)
             results.append({
                 "asn": asn_match.group(1),
                 "cidr": cidr_match.group(1) if cidr_match else None,
@@ -110,7 +114,7 @@ class ReconModule(BaseModule):
             self.logger.info(f"User declined to install {tool_name}, skipping")
             return False
         try:
-            result = _subprocess.run(install_cmd.split(), capture_output=True, text=True, timeout=300)
+            result = _subprocess.run(shlex.split(install_cmd), capture_output=True, text=True, timeout=300)
             if result.returncode == 0:
                 self.logger.info(f"{tool_name} installed successfully")
                 return True
@@ -156,7 +160,6 @@ class ReconModule(BaseModule):
     async def _lookup_asn_ip_ranges(self, asn_list: list[str]) -> list[str]:
         """Look up IP ranges for each ASN. Try amass first, fall back to whois RADB."""
         all_cidrs = []
-        cidr_re = re.compile(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2})')
 
         for asn in asn_list:
             cidrs_for_asn = []
@@ -166,7 +169,7 @@ class ReconModule(BaseModule):
             if result.returncode == 0 and result.stdout.strip():
                 for line in result.stdout.splitlines():
                     line = line.strip()
-                    match = cidr_re.search(line)
+                    match = self._CIDR_RE.search(line)
                     if match:
                         cidrs_for_asn.append(match.group(1))
 
