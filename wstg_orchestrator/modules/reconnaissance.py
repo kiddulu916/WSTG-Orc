@@ -42,10 +42,11 @@ class ReconModule(BaseModule):
     def _get_target_domains(self) -> list[str]:
         """Return deduplicated list of domains to enumerate subdomains for.
 
-        Uses wildcard_domains from config (wildcard URLs with '*.' stripped).
-        Falls back to base_domain if no wildcard URLs are configured.
+        Uses enumeration_domains from config which combines base_domain,
+        wildcard domains (with '*.' stripped), and in-scope URL hostnames.
+        Falls back to base_domain if enumeration_domains is unavailable.
         """
-        domains = getattr(self.config, "wildcard_domains", None) or []
+        domains = getattr(self.config, "enumeration_domains", None) or []
         if not domains:
             domains = [self.config.base_domain]
         return domains
