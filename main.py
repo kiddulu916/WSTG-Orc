@@ -1,4 +1,4 @@
-# wstg_orchestrator/main.py
+# main.py
 import argparse
 import asyncio
 import logging
