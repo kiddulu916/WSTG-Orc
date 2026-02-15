@@ -27,7 +27,7 @@ pytest tests/ -v                         # Verbose test output
 
 ## Architecture
 
-**Entry point:** `main.py` creates an `Orchestrator` which wires up all dependencies and registers modules. There is also `wstg_orchestrator/main.py` (untracked copy with identical content).
+**Entry point:** `main.py` (root directory) creates an `Orchestrator` which wires up all dependencies and registers modules.
 
 **Module system:** All testing modules inherit from `BaseModule` (`wstg_orchestrator/modules/base_module.py`) and implement an async `execute()` method. Six dependencies are injected via constructor: StateManager, ConfigLoader, ScopeChecker, RateLimiter, EvidenceLogger, CallbackServer.
 

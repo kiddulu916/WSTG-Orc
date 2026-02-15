@@ -4,6 +4,15 @@ import asyncio
 import logging
 import os
 import sys
+from wstg_orchestrator.modules.reconnaissance import ReconModule
+from wstg_orchestrator.modules.fingerprinting import FingerprintingModule
+from wstg_orchestrator.modules.configuration_testing import ConfigTestingModule
+from wstg_orchestrator.modules.auth_testing import AuthTestingModule
+from wstg_orchestrator.modules.authorization_testing import AuthorizationTestingModule
+from wstg_orchestrator.modules.session_testing import SessionTestingModule
+from wstg_orchestrator.modules.input_validation import InputValidationModule
+from wstg_orchestrator.modules.business_logic import BusinessLogicModule
+from wstg_orchestrator.modules.api_testing import ApiTestingModule
 
 from wstg_orchestrator.state_manager import StateManager
 from wstg_orchestrator.utils.config_loader import ConfigLoader
@@ -13,6 +22,7 @@ from wstg_orchestrator.utils.evidence_logger import EvidenceLogger
 from wstg_orchestrator.utils.callback_server import CallbackServer
 from wstg_orchestrator.utils.command_runner import CommandRunner
 from wstg_orchestrator.scope_builder import ScopeBuilder
+from wstg_orchestrator.reporting import ReportGenerator
 
 logger = logging.getLogger("wstg.orchestrator")
 
@@ -144,7 +154,7 @@ class Orchestrator:
             logger.info("Scan complete")
 
     def _get_module(self, phase_name: str):
-        self._modules.get(phase_name)
+        return self._modules.get(phase_name)
 
     def register_module(self, phase_name: str, module):
         self._modules[phase_name] = module
@@ -176,32 +186,115 @@ def main():
         evidence_dir=args.evidence,
     )
 
-    from wstg_orchestrator.modules.reconnaissance import ReconModule
-    from wstg_orchestrator.modules.fingerprinting import FingerprintingModule
-    from wstg_orchestrator.modules.configuration_testing import ConfigTestingModule
-    from wstg_orchestrator.modules.auth_testing import AuthTestingModule
-    from wstg_orchestrator.modules.authorization_testing import AuthorizationTestingModule
-    from wstg_orchestrator.modules.session_testing import SessionTestingModule
-    from wstg_orchestrator.modules.input_validation import InputValidationModule
-    from wstg_orchestrator.modules.business_logic import BusinessLogicModule
-    from wstg_orchestrator.modules.api_testing import ApiTestingModule
-    from wstg_orchestrator.reporting import ReportGenerator
-
-    orch.register_module("reconnaissance", ReconModule(orch.state, orch.config, orch.scope_checker, orch.rate_limiter, orch.evidence_logger, orch.callback_server))
-    orch.register_module("fingerprinting", FingerprintingModule(orch.state, orch.config, orch.scope_checker, orch.rate_limiter, orch.evidence_logger, orch.callback_server))
-    orch.register_module("configuration_testing", ConfigTestingModule(orch.state, orch.config, orch.scope_checker, orch.rate_limiter, orch.evidence_logger, orch.callback_server))
-    orch.register_module("auth_testing", AuthTestingModule(orch.state, orch.config, orch.scope_checker, orch.rate_limiter, orch.evidence_logger, orch.callback_server))
-    orch.register_module("authorization_testing", AuthorizationTestingModule(orch.state, orch.config, orch.scope_checker, orch.rate_limiter, orch.evidence_logger, orch.callback_server))
-    orch.register_module("session_testing", SessionTestingModule(orch.state, orch.config, orch.scope_checker, orch.rate_limiter, orch.evidence_logger, orch.callback_server))
-    orch.register_module("input_validation", InputValidationModule(orch.state, orch.config, orch.scope_checker, orch.rate_limiter, orch.evidence_logger, orch.callback_server))
-    orch.register_module("business_logic", BusinessLogicModule(orch.state, orch.config, orch.scope_checker, orch.rate_limiter, orch.evidence_logger, orch.callback_server))
-    orch.register_module("api_testing", ApiTestingModule(orch.state, orch.config, orch.scope_checker, orch.rate_limiter, orch.evidence_logger, orch.callback_server))
+    # Register all modules
+    orch.register_module(
+        "reconnaissance",
+        ReconModule(
+            orch.state,
+            orch.config,
+            orch.scope_checker,
+            orch.rate_limiter,
+            orch.evidence_logger,
+            orch.callback_server
+            )
+        )
+    orch.register_module(
+        "fingerprinting",
+        FingerprintingModule(
+            orch.state,
+            orch.config,
+            orch.scope_checker,
+            orch.rate_limiter,
+            orch.evidence_logger,
+            orch.callback_server
+            )
+        )
+    orch.register_module(
+        "configuration_testing",
+        ConfigTestingModule(
+            orch.state,
+            orch.config,
+            orch.scope_checker,
+            orch.rate_limiter,
+            orch.evidence_logger,
+            orch.callback_server
+            )
+        )
+    orch.register_module(
+        "auth_testing",
+        AuthTestingModule(
+            orch.state,
+            orch.config,
+            orch.scope_checker,
+            orch.rate_limiter,
+            orch.evidence_logger,
+            orch.callback_server
+            )
+        )
+    orch.register_module(
+        "authorization_testing",
+        AuthorizationTestingModule(
+            orch.state,
+            orch.config,
+            orch.scope_checker,
+            orch.rate_limiter,
+            orch.evidence_logger,
+            orch.callback_server
+            )
+        )
+    orch.register_module(
+        "session_testing",
+        SessionTestingModule(
+            orch.state,
+            orch.config,
+            orch.scope_checker,
+            orch.rate_limiter,
+            orch.evidence_logger,
+            orch.callback_server
+            )
+        )
+    orch.register_module(
+        "input_validation",
+        InputValidationModule(
+            orch.state,
+            orch.config,
+            orch.scope_checker,
+            orch.rate_limiter,
+            orch.evidence_logger,
+            orch.callback_server
+            )
+        )
+    orch.register_module(
+        "business_logic",
+        BusinessLogicModule(
+            orch.state,
+            orch.config,
+            orch.scope_checker,
+            orch.rate_limiter,
+            orch.evidence_logger,
+            orch.callback_server
+            )
+        )
+    orch.register_module(
+        "api_testing",
+        ApiTestingModule(
+            orch.state,
+            orch.config,
+            orch.scope_checker,
+            orch.rate_limiter,
+            orch.evidence_logger,
+            orch.callback_server
+            )
+        )
 
     asyncio.run(orch.run())
 
     # Generate reports after scan completion
     logger.info("Generating reports...")
-    report_gen = ReportGenerator(orch.state._state, orch.evidence_logger.get_reports_dir())
+    report_gen = ReportGenerator(
+        orch.state._state, 
+        orch.evidence_logger.get_reports_dir()
+        )
     report_gen.generate_all()
     logger.info("Reports generated successfully.")
 
