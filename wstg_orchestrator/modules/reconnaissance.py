@@ -1,9 +1,11 @@
 # wstg_orchestrator/modules/reconnaissance.py
 import asyncio
 import re
+import subprocess as _subprocess
 from urllib.parse import urlparse, parse_qs
 
 from wstg_orchestrator.modules.base_module import BaseModule
+from wstg_orchestrator.utils.cli_handler import cli_input
 from wstg_orchestrator.utils.command_runner import CommandRunner
 from wstg_orchestrator.utils.parser_utils import (
     extract_params_from_url,
@@ -81,6 +83,33 @@ class ReconModule(BaseModule):
                 "org": line,
             })
         return results
+
+    def _parse_whois_radb_output(self, stdout: str) -> list[str]:
+        """Parse whois RADB output for route:/route6: lines, return list of CIDRs."""
+        cidrs = []
+        route_re = re.compile(r'^route6?:\s+(.+)', re.MULTILINE)
+        for match in route_re.finditer(stdout):
+            cidr = match.group(1).strip()
+            if cidr:
+                cidrs.append(cidr)
+        return cidrs
+
+    def _prompt_install_tool(self, tool_name: str, install_cmd: str) -> bool:
+        """Prompt user to install a missing tool. Returns True if installed successfully."""
+        self.logger.warning(f"{tool_name} not found.")
+        answer = cli_input(f"Install {tool_name} with `{install_cmd}`? [y/N]: ").strip().lower()
+        if answer != "y":
+            self.logger.info(f"User declined to install {tool_name}, skipping")
+            return False
+        try:
+            result = _subprocess.run(install_cmd.split(), capture_output=True, text=True, timeout=300)
+            if result.returncode == 0:
+                self.logger.info(f"{tool_name} installed successfully")
+                return True
+            self.logger.error(f"Failed to install {tool_name}: {result.stderr}")
+        except Exception as e:
+            self.logger.error(f"Error installing {tool_name}: {e}")
+        return False
 
     async def _passive_osint(self):
         self.logger.info("Starting passive OSINT - subdomain enumeration")

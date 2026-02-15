@@ -194,3 +194,43 @@ def test_parse_amass_org_output_no_asn_token(recon_module):
     """Lines without an AS\\d+ token are skipped."""
     stdout = "Some random line, Tesla\n"
     assert recon_module._parse_amass_org_output(stdout, "Tesla") == []
+
+
+def test_parse_whois_radb_output_extracts_routes(recon_module):
+    """Extracts CIDR from route: and route6: lines."""
+    stdout = (
+        "route:          12.0.0.0/8\n"
+        "descr:          Tesla\n"
+        "origin:         AS394161\n"
+        "route6:         2001:db8::/32\n"
+        "descr:          Tesla IPv6\n"
+    )
+    cidrs = recon_module._parse_whois_radb_output(stdout)
+    assert "12.0.0.0/8" in cidrs
+    assert "2001:db8::/32" in cidrs
+
+
+def test_parse_whois_radb_output_empty(recon_module):
+    assert recon_module._parse_whois_radb_output("") == []
+
+
+def test_parse_whois_radb_output_no_routes(recon_module):
+    stdout = "descr: Some description\norigin: AS12345\n"
+    assert recon_module._parse_whois_radb_output(stdout) == []
+
+
+@patch("wstg_orchestrator.modules.reconnaissance.cli_input", return_value="y")
+@patch("subprocess.run")
+def test_prompt_install_tool_accepted(mock_run, mock_input, recon_module):
+    """When user accepts, install command runs and returns True."""
+    mock_run.return_value = MagicMock(returncode=0)
+    result = recon_module._prompt_install_tool("amass", "go install -v github.com/owasp-amass/amass/v4/...@master")
+    assert result is True
+    mock_run.assert_called_once()
+
+
+@patch("wstg_orchestrator.modules.reconnaissance.cli_input", return_value="n")
+def test_prompt_install_tool_declined(mock_input, recon_module):
+    """When user declines, returns False without running install."""
+    result = recon_module._prompt_install_tool("amass", "go install -v github.com/owasp-amass/amass/v4/...@master")
+    assert result is False
