@@ -23,6 +23,7 @@ from wstg_orchestrator.utils.callback_server import CallbackServer
 from wstg_orchestrator.utils.command_runner import CommandRunner
 from wstg_orchestrator.scope_builder import ScopeBuilder
 from wstg_orchestrator.reporting import ReportGenerator
+from wstg_orchestrator.utils.cli_handler import SignalHandler, KeyListener
 
 logger = logging.getLogger("wstg.orchestrator")
 
@@ -115,6 +116,8 @@ class Orchestrator:
             }
         )
         self._modules = {}
+        self._skip_phase = False
+        self.current_phase = None
 
     def get_execution_order(self) -> list[str]:
         return list(EXECUTION_ORDER)
@@ -130,7 +133,7 @@ class Orchestrator:
             else:
                 logger.warning(f"Tool not found: {tool} (will use fallback if available)")
 
-    async def run(self):
+    async def run(self, signal_handler=None):
         logger.info(f"Starting WSTG scan for {self.config.company_name}")
         logger.info(f"Target domain: {self.config.base_domain}")
 
@@ -143,12 +146,23 @@ class Orchestrator:
                     logger.info(f"Skipping completed phase: {phase_name}")
                     continue
 
+                self.current_phase = phase_name
+                self._skip_phase = False
+
                 module = self._get_module(phase_name)
                 if module:
                     await module.run()
+                    if self._skip_phase:
+                        logger.info(f"Phase skipped by user: {phase_name}")
+                        self._skip_phase = False
+                        continue
                 else:
                     logger.warning(f"No module registered for phase: {phase_name}")
+
+                if signal_handler and signal_handler.is_paused():
+                    signal_handler.wait_for_resume()
         finally:
+            self.current_phase = None
             self.callback_server.stop()
             self.state.save()
             logger.info("Scan complete")
@@ -287,14 +301,28 @@ def main():
             )
         )
 
-    asyncio.run(orch.run())
+    signal_handler = SignalHandler(
+        state_manager=orch.state,
+        config_path=args.config,
+        state_path=args.state,
+        evidence_dir=args.evidence,
+    )
+    signal_handler.register()
+
+    key_listener = KeyListener(orch, signal_handler)
+    key_listener.start()
+
+    try:
+        asyncio.run(orch.run(signal_handler=signal_handler))
+    finally:
+        key_listener.stop()
 
     # Generate reports after scan completion
     logger.info("Generating reports...")
     report_gen = ReportGenerator(
-        orch.state._state, 
+        orch.state._state,
         orch.evidence_logger.get_reports_dir()
-        )
+    )
     report_gen.generate_all()
     logger.info("Reports generated successfully.")
 

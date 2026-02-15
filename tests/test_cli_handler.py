@@ -141,6 +141,21 @@ class TestSignalHandler:
         with pytest.raises(SystemExit):
             handler.handle_sigint(signal.SIGINT, None)
 
+    def test_wait_for_resume_blocks_until_unpaused(self, tmp_path):
+        handler, _ = self._make_handler(tmp_path)
+        handler.set_paused(True)
+
+        def unpause_after_delay():
+            import time
+            time.sleep(0.2)
+            handler.set_paused(False)
+
+        t = threading.Thread(target=unpause_after_delay)
+        t.start()
+        handler.wait_for_resume()
+        t.join()
+        assert handler.is_paused() is False
+
 
 class TestKeyListener:
     def _make_listener(self, tmp_path):

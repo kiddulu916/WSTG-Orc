@@ -1,4 +1,5 @@
 # tests/test_main.py
+import asyncio
 import os
 import tempfile
 import pytest
@@ -68,3 +69,54 @@ def test_orchestrator_module_order(config_file, tmp_dir):
     assert order[0] == "reconnaissance"
     assert "fingerprinting" in order
     assert order.index("reconnaissance") < order.index("input_validation")
+
+
+def test_orchestrator_run_checks_pause(config_file, tmp_dir):
+    """Orchestrator.run() checks signal_handler pause state between phases."""
+    orch = Orchestrator(
+        config_path=config_file,
+        state_path=os.path.join(tmp_dir, "state.json"),
+        evidence_dir=os.path.join(tmp_dir, "evidence"),
+    )
+    signal_handler = MagicMock()
+    signal_handler.is_paused.return_value = False
+
+    mock_module = MagicMock()
+    mock_module.run = AsyncMock()
+    orch.register_module("reconnaissance", mock_module)
+
+    with patch.object(orch, '_check_tools'):
+        with patch.object(orch.callback_server, 'start'):
+            with patch.object(orch.callback_server, 'stop'):
+                asyncio.run(orch.run(signal_handler=signal_handler))
+
+    signal_handler.is_paused.assert_called()
+
+
+def test_orchestrator_run_without_signal_handler(config_file, tmp_dir):
+    """Orchestrator.run() works without a signal_handler (backwards compat)."""
+    orch = Orchestrator(
+        config_path=config_file,
+        state_path=os.path.join(tmp_dir, "state.json"),
+        evidence_dir=os.path.join(tmp_dir, "evidence"),
+    )
+    mock_module = MagicMock()
+    mock_module.run = AsyncMock()
+    orch.register_module("reconnaissance", mock_module)
+
+    with patch.object(orch, '_check_tools'):
+        with patch.object(orch.callback_server, 'start'):
+            with patch.object(orch.callback_server, 'stop'):
+                asyncio.run(orch.run())
+    mock_module.run.assert_called_once()
+
+
+def test_orchestrator_has_current_phase_and_skip(config_file, tmp_dir):
+    """Orchestrator has current_phase and _skip_phase attributes."""
+    orch = Orchestrator(
+        config_path=config_file,
+        state_path=os.path.join(tmp_dir, "state.json"),
+        evidence_dir=os.path.join(tmp_dir, "evidence"),
+    )
+    assert orch.current_phase is None
+    assert orch._skip_phase is False

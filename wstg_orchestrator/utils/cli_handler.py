@@ -65,6 +65,11 @@ class SignalHandler:
         with self._lock:
             self._paused = value
 
+    def wait_for_resume(self):
+        """Block until paused state is cleared (by KeyListener toggle)."""
+        while self.is_paused():
+            time.sleep(0.1)
+
     def handle_sigint(self, signum, frame):
         with self._lock:
             if self._paused and self._force_exit:
