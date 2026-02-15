@@ -1,52 +1,53 @@
 # wstg_orchestrator/scope_builder.py
 import yaml
+from wstg_orchestrator.utils.cli_handler import cli_input
 
 
 class ScopeBuilder:
     def build(self) -> dict:
         print("\n=== WSTG Orchestrator - Scope Builder ===\n")
 
-        company_name = input("Company name: ").strip()
-        base_domain = input("Base domain (e.g., example.com): ").strip()
+        company_name = cli_input("Company name: ").strip()
+        base_domain = cli_input("Base domain (e.g., example.com): ").strip()
 
         wildcard_urls = self._parse_list(
-            input("Wildcard URLs (e.g., *.example.com, *.sub.example.com; comma-separated, or empty): ")
+            cli_input("Wildcard URLs (e.g., *.example.com, *.sub.example.com; comma-separated, or empty): ")
         )
         if not wildcard_urls:
             wildcard_urls = [f"*.{base_domain}"]
 
         in_scope_urls = self._parse_list(
-            input("In-scope URLs (comma-separated, or empty): ")
+            cli_input("In-scope URLs (comma-separated, or empty): ")
         )
         in_scope_ips = self._parse_list(
-            input("In-scope IPs (comma-separated, or empty): ")
+            cli_input("In-scope IPs (comma-separated, or empty): ")
         )
         out_of_scope_urls = self._parse_list(
-            input("Out-of-scope URLs (comma-separated, or empty): ")
+            cli_input("Out-of-scope URLs (comma-separated, or empty): ")
         )
         out_of_scope_ips = self._parse_list(
-            input("Out-of-scope IPs (comma-separated, or empty): ")
+            cli_input("Out-of-scope IPs (comma-separated, or empty): ")
         )
         out_of_scope_attack_vectors = self._parse_list(
-            input("Out-of-scope attack vectors (e.g., dos, social_engineering): ")
+            cli_input("Out-of-scope attack vectors (e.g., dos, social_engineering): ")
         )
 
-        rate_limit_raw = input("Rate limit (requests/sec, default 10): ").strip()
+        rate_limit_raw = cli_input("Rate limit (requests/sec, default 10): ").strip()
         rate_limit = int(rate_limit_raw) if rate_limit_raw else 10
 
-        headers_raw = input("Custom headers (Key: Value, comma-separated, or empty): ").strip()
+        headers_raw = cli_input("Custom headers (Key: Value, comma-separated, or empty): ").strip()
         custom_headers = self._parse_headers(headers_raw)
 
-        auth_raw = input("Auth profile (type:credential, or empty to skip): ").strip()
+        auth_raw = cli_input("Auth profile (type:credential, or empty to skip): ").strip()
         auth_profiles = {}
         if auth_raw:
             auth_profiles = self._parse_auth(auth_raw)
 
-        callback_host = input("Callback server host (default 0.0.0.0): ").strip() or "0.0.0.0"
-        callback_port_raw = input("Callback server port (default 8443): ").strip()
+        callback_host = cli_input("Callback server host (default 0.0.0.0): ").strip() or "0.0.0.0"
+        callback_port_raw = cli_input("Callback server port (default 8443): ").strip()
         callback_port = int(callback_port_raw) if callback_port_raw else 8443
 
-        notes = input("Additional notes: ").strip()
+        notes = cli_input("Additional notes: ").strip()
 
         return {
             "program_scope": {
