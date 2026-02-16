@@ -340,6 +340,155 @@ class ToolInstaller:
             logger.error("Install command failed for %s: %s", tool_name, e)
             return False
 
+    def install_with_escalation(self, tool_name: str) -> bool:
+        """Install a tool with full escalation chain.
+
+        1. Try language installer (go/pip/cargo) -- if runtime missing, offer to install it
+        2. If user declines runtime, fall back to system package manager
+        3. If no package manager, offer to install one (macOS = Homebrew)
+        4. If nothing works, print friendly message and sys.exit(0)
+        """
+        if tool_name not in TOOL_REGISTRY:
+            print(f"\n  Unknown tool: {tool_name}")
+            sys.exit(0)
+
+        install_info = TOOL_REGISTRY[tool_name]["install"]
+
+        # Step 1: Try language installers
+        for lang in ("go", "pip", "cargo"):
+            if lang not in install_info:
+                continue
+            # Check if runtime is available
+            if lang == "pip":
+                runtime_available = shutil.which("pip3") or shutil.which("pip")
+            else:
+                runtime_available = shutil.which(lang)
+
+            if not runtime_available:
+                # Offer to install the runtime
+                installed_runtime = self._offer_install_runtime(lang)
+                if installed_runtime:
+                    # Re-check after installing runtime
+                    if lang == "pip":
+                        runtime_available = shutil.which("pip3") or shutil.which("pip")
+                    else:
+                        runtime_available = shutil.which(lang)
+
+            if runtime_available:
+                # Build and run the language install command
+                package = install_info[lang]
+                if lang == "go":
+                    cmd = package
+                elif lang == "pip":
+                    cmd = f"pip3 install --user {package}"
+                elif lang == "cargo":
+                    cmd = f"cargo install {package}"
+                try:
+                    proc = subprocess.run(
+                        cmd, shell=True, capture_output=True, text=True, timeout=300,
+                    )
+                    if proc.returncode == 0:
+                        return True
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+
+        # Step 2: Fall back to system package manager
+        for mgr in ("apt", "dnf", "pacman", "brew"):
+            if mgr not in install_info:
+                continue
+            if self.platform.pkg_manager == mgr:
+                cmd = _build_pkg_install_cmd(mgr, install_info[mgr])
+                try:
+                    proc = subprocess.run(
+                        cmd, shell=True, capture_output=True, text=True, timeout=300,
+                    )
+                    if proc.returncode == 0:
+                        return True
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+
+        # Step 3: Offer to install a package manager
+        if not self.platform.pkg_manager:
+            installed_mgr = self._offer_install_pkg_manager()
+            if installed_mgr:
+                self.platform.pkg_manager = installed_mgr
+                # Retry with the new package manager
+                for mgr in ("apt", "dnf", "pacman", "brew"):
+                    if mgr not in install_info:
+                        continue
+                    if self.platform.pkg_manager == mgr:
+                        cmd = _build_pkg_install_cmd(mgr, install_info[mgr])
+                        try:
+                            proc = subprocess.run(
+                                cmd, shell=True, capture_output=True, text=True, timeout=300,
+                            )
+                            if proc.returncode == 0:
+                                return True
+                        except (subprocess.TimeoutExpired, OSError):
+                            pass
+
+        # Step 4: Nothing worked
+        print(f"\n  Could not install {tool_name}. No available install method for your platform.")
+        print(f"  Please install it manually and try again.\n")
+        sys.exit(0)
+
+    def _offer_install_runtime(self, runtime: str) -> bool:
+        """Offer to install a language runtime (go/pip/cargo) via system pkg manager."""
+        if not self.platform.pkg_manager:
+            return False
+        pkg_name = _RUNTIME_PACKAGES.get(runtime, {}).get(self.platform.pkg_manager)
+        if not pkg_name:
+            return False
+
+        answer = input(f"  {runtime} is not installed. Install it via {self.platform.pkg_manager}? [y/N] ").strip().lower()
+        if answer != "y":
+            return False
+
+        cmd = _build_pkg_install_cmd(self.platform.pkg_manager, pkg_name)
+        try:
+            proc = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=300,
+            )
+            return proc.returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+
+    def _offer_install_pkg_manager(self) -> str | None:
+        """Offer to install a package manager (Homebrew on macOS)."""
+        if self.platform.os_type == "macos":
+            answer = input("  Homebrew is not installed. Install it? [y/N] ").strip().lower()
+            if answer == "y":
+                try:
+                    proc = subprocess.run(
+                        '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
+                        shell=True, capture_output=True, text=True, timeout=600,
+                    )
+                    if proc.returncode == 0:
+                        return "brew"
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+        return None
+
+
+_RUNTIME_PACKAGES = {
+    "go": {"apt": "golang-go", "dnf": "golang", "pacman": "go", "brew": "go"},
+    "pip": {"apt": "python3-pip", "dnf": "python3-pip", "pacman": "python-pip", "brew": "python3"},
+    "cargo": {"apt": "cargo", "dnf": "cargo", "pacman": "rust", "brew": "rust"},
+}
+
+
+def _build_pkg_install_cmd(pkg_manager: str, package: str) -> str:
+    """Build a system package install command string."""
+    if pkg_manager == "apt":
+        return f"sudo apt install -y {package}"
+    elif pkg_manager == "dnf":
+        return f"sudo dnf install -y {package}"
+    elif pkg_manager == "pacman":
+        return f"sudo pacman -S --noconfirm {package}"
+    elif pkg_manager == "brew":
+        return f"brew install {package}"
+    return ""
+
 
 def _exit_no_wsl():
     """Print WSL install instructions and exit."""

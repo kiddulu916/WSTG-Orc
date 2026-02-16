@@ -296,3 +296,42 @@ class TestPromptInstallMissing:
     def test_no_missing_returns_empty(self):
         result = prompt_install_missing([])
         assert result == []
+
+
+class TestEscalationChain:
+    @patch("builtins.input", return_value="y")
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_offers_to_install_go_when_missing(self, mock_which, mock_run, mock_input):
+        call_count = {"n": 0}
+        def which_side_effect(name):
+            call_count["n"] += 1
+            if name == "go":
+                return "/usr/bin/go" if call_count["n"] > 3 else None
+            if name in ("pip3", "pip", "cargo"):
+                return None
+            return None
+        mock_which.side_effect = which_side_effect
+        mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        installer = ToolInstaller(info)
+        result = installer.install_with_escalation("subfinder")
+        assert result is True
+
+    @patch("builtins.input", return_value="n")
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value=None)
+    def test_falls_back_to_pkg_manager_when_declined(self, mock_which, mock_run, mock_input):
+        mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        installer = ToolInstaller(info)
+        result = installer.install_with_escalation("subfinder")
+        assert result is True
+
+    @patch("builtins.input", return_value="n")
+    @patch("shutil.which", return_value=None)
+    def test_exits_when_no_options(self, mock_which, mock_input):
+        info = PlatformInfo(os_type="linux", distro="unknown", pkg_manager="")
+        installer = ToolInstaller(info)
+        with pytest.raises(SystemExit):
+            installer.install_with_escalation("assetfinder")
