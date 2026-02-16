@@ -571,6 +571,52 @@ def prompt_install_missing(missing_tools: list[str]) -> list[str]:
         return []
 
 
+class ToolChecker:
+    """Main entry point for cross-platform tool checking and installation."""
+
+    def run(self) -> dict[str, bool]:
+        """Detect OS, check tools, prompt to install missing, return final status."""
+        # Step 1: Detect platform
+        platform_info = detect_platform()
+        logger.info(f"Platform: {platform_info}")
+
+        # Step 2: Windows WSL handling
+        wsl_result = handle_windows_wsl(platform_info)
+        if wsl_result == "relaunch":
+            os.execvp("wsl", [
+                "wsl", "-d", "kali-linux", "python3",
+                sys.argv[0], *sys.argv[1:],
+            ])
+
+        # Step 3: Check all tools
+        tool_status = check_tools()
+
+        # Step 4: Display summary table
+        table = format_summary_table(platform_info, tool_status)
+        print(table)
+
+        # Step 5: Handle missing tools
+        missing = [name for name, available in tool_status.items() if not available]
+        if missing:
+            to_install = prompt_install_missing(missing)
+            if to_install:
+                installer = ToolInstaller(platform_info)
+                for tool_name in to_install:
+                    print(f"Installing {tool_name}...", end=" ", flush=True)
+                    success = installer.install_with_escalation(tool_name)
+                    print("✓ done" if success else "✗ failed")
+
+                # Re-check after installs
+                tool_status = check_tools()
+                still_missing = sum(1 for v in tool_status.values() if not v)
+                if still_missing:
+                    print(f"\n{still_missing} tool(s) still unavailable.")
+                else:
+                    print("\nAll tools installed successfully!")
+
+        return tool_status
+
+
 def _detect_wsl() -> bool:
     try:
         if os.path.exists("/proc/version"):

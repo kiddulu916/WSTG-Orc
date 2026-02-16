@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import patch, mock_open, MagicMock
 from wstg_orchestrator.utils.tool_checker import (
     PlatformInfo, detect_platform, TOOL_REGISTRY, check_tools, format_summary_table,
-    ToolInstaller, handle_windows_wsl, prompt_install_missing,
+    ToolInstaller, handle_windows_wsl, prompt_install_missing, ToolChecker,
 )
 
 
@@ -335,3 +335,30 @@ class TestEscalationChain:
         installer = ToolInstaller(info)
         with pytest.raises(SystemExit):
             installer.install_with_escalation("assetfinder")
+
+
+class TestToolCheckerRun:
+    @patch("wstg_orchestrator.utils.tool_checker.handle_windows_wsl", return_value=None)
+    @patch("wstg_orchestrator.utils.tool_checker.detect_platform")
+    @patch("wstg_orchestrator.utils.tool_checker.check_tools")
+    @patch("wstg_orchestrator.utils.tool_checker.format_summary_table", return_value="table")
+    @patch("builtins.print")
+    def test_run_returns_tool_status_when_all_found(self, mock_print, mock_table, mock_check, mock_detect, mock_wsl):
+        mock_detect.return_value = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        mock_check.return_value = {"nmap": True, "subfinder": True}
+        checker = ToolChecker()
+        result = checker.run()
+        assert result == {"nmap": True, "subfinder": True}
+
+    @patch("wstg_orchestrator.utils.tool_checker.handle_windows_wsl", return_value=None)
+    @patch("wstg_orchestrator.utils.tool_checker.detect_platform")
+    @patch("wstg_orchestrator.utils.tool_checker.check_tools")
+    @patch("wstg_orchestrator.utils.tool_checker.format_summary_table", return_value="table")
+    @patch("wstg_orchestrator.utils.tool_checker.prompt_install_missing", return_value=[])
+    @patch("builtins.print")
+    def test_run_prompts_on_missing(self, mock_print, mock_prompt, mock_table, mock_check, mock_detect, mock_wsl):
+        mock_detect.return_value = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        mock_check.return_value = {"nmap": True, "subfinder": False}
+        checker = ToolChecker()
+        result = checker.run()
+        mock_prompt.assert_called_once_with(["subfinder"])
