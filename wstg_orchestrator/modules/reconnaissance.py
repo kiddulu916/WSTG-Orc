@@ -545,5 +545,110 @@ class ReconModule(BaseModule):
 
         return []
 
+    async def _call_playwright_mcp(self, tool_name: str, **kwargs) -> dict:
+        """Call a Playwright MCP tool. Raises RuntimeError if unavailable."""
+        try:
+            from wstg_orchestrator.utils.mcp_client import call_mcp_tool
+            return await call_mcp_tool("playwright", tool_name, **kwargs)
+        except (ImportError, Exception) as e:
+            raise RuntimeError(f"Playwright MCP unavailable: {e}")
+
+    async def _fetch_crunchbase_acquisitions(self, company_name: str) -> list[dict]:
+        """Fetch acquisition data from Crunchbase via Playwright browser automation."""
+        domain_re = re.compile(
+            r'([a-zA-Z0-9][-a-zA-Z0-9]*\.(?:com|org|net|io|co|ai|app|dev|xyz|me|tv|us|uk|de))'
+        )
+        year_re = re.compile(r'((?:19|20)\d{2})')
+
+        try:
+            # Step 1: Navigate to Crunchbase search
+            await self._call_playwright_mcp(
+                "browser_navigate",
+                url=f"https://www.crunchbase.com/textsearch?q={company_name}",
+            )
+
+            # Step 2: Snapshot search results
+            search_snap = await self._call_playwright_mcp("browser_snapshot")
+            search_content = search_snap.get("content", "")
+
+            # Step 3: Check for organization result and click it
+            if "organization" not in search_content.lower():
+                await self._call_playwright_mcp("browser_close")
+                return []
+
+            await self._call_playwright_mcp("browser_click", text="Organization result")
+
+            # Step 4: Snapshot org page to find URL path
+            org_snap = await self._call_playwright_mcp("browser_snapshot")
+            org_content = org_snap.get("content", "")
+
+            # Extract org path
+            org_path = None
+            for line in org_content.splitlines():
+                if "/organization/" in line:
+                    path_match = re.search(r'(/organization/[^\s\]"\',]+)', line)
+                    if path_match:
+                        org_path = path_match.group(1)
+                        break
+
+            if not org_path:
+                await self._call_playwright_mcp("browser_close")
+                return []
+
+            # Step 5: Navigate to acquisitions tab
+            acq_url = f"https://www.crunchbase.com{org_path}/acquisitions"
+            await self._call_playwright_mcp("browser_navigate", url=acq_url)
+
+            # Step 6: Snapshot acquisitions table
+            acq_snap = await self._call_playwright_mcp("browser_snapshot")
+            acq_content = acq_snap.get("content", "")
+
+            # Step 7: Parse snapshot for acquisitions
+            results = []
+            seen_domains = set()
+            for line in acq_content.splitlines():
+                line = line.strip()
+                # Match pipe-separated rows or "- row:" prefixed lines
+                if "|" in line or line.startswith("- row:"):
+                    domain_match = domain_re.search(line)
+                    year_match = year_re.search(line)
+                    if domain_match:
+                        domain = domain_match.group(1).lower()
+                        if domain in seen_domains:
+                            continue
+                        seen_domains.add(domain)
+
+                        # Extract company name from row content
+                        if line.startswith("- row:"):
+                            parts = line[len("- row:"):].split("|")
+                        else:
+                            parts = line.split("|")
+                        company = parts[0].strip().strip("-").strip() if parts else ""
+
+                        results.append({
+                            "company": company,
+                            "domain": domain,
+                            "year": year_match.group(1) if year_match else "",
+                            "source": "crunchbase",
+                        })
+
+            # Step 8: Close browser
+            await self._call_playwright_mcp("browser_close")
+
+            return results
+
+        except RuntimeError:
+            self.logger.warning(
+                f"Playwright MCP unavailable, skipping Crunchbase acquisition lookup for {company_name}"
+            )
+            return []
+        except Exception as e:
+            self.logger.warning(f"Crunchbase acquisition fetch failed: {e}")
+            try:
+                await self._call_playwright_mcp("browser_close")
+            except Exception:
+                pass
+            return []
+
     def _filter_in_scope(self, items: list[str]) -> list[str]:
         return [item for item in items if self.scope.is_in_scope(item)]

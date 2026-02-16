@@ -613,3 +613,74 @@ async def test_fetch_wikipedia_acquisitions_tries_list_page(recon_module):
         results = await recon_module._fetch_wikipedia_acquisitions("Alphabet")
     assert len(results) >= 1
     assert results[0]["domain"] == "youtube.com"
+
+
+@pytest.mark.asyncio
+async def test_fetch_crunchbase_acquisitions_success(recon_module):
+    """Extracts acquisitions from Crunchbase via Playwright MCP tools."""
+    search_snapshot = (
+        "- link: Organization result\n"
+        "  url: /organization/meta-platforms\n"
+        "  text: Meta Platforms\n"
+    )
+    acq_snapshot = (
+        "- row: Instagram | instagram.com | October 2012\n"
+        "- row: WhatsApp | whatsapp.com | February 2014\n"
+        "- row: Oculus VR | oculus.com | March 2014\n"
+    )
+
+    async def mock_mcp_call(tool_name, **kwargs):
+        if tool_name == "browser_navigate":
+            return {"success": True}
+        if tool_name == "browser_snapshot":
+            if not hasattr(mock_mcp_call, '_snapshot_count'):
+                mock_mcp_call._snapshot_count = 0
+            mock_mcp_call._snapshot_count += 1
+            if mock_mcp_call._snapshot_count <= 2:
+                return {"content": search_snapshot}
+            return {"content": acq_snapshot}
+        if tool_name == "browser_click":
+            return {"success": True}
+        if tool_name == "browser_close":
+            return {"success": True}
+        return {}
+
+    with patch.object(recon_module, '_call_playwright_mcp', side_effect=mock_mcp_call):
+        results = await recon_module._fetch_crunchbase_acquisitions("Meta")
+
+    domains = [r["domain"] for r in results]
+    assert "instagram.com" in domains
+    assert "whatsapp.com" in domains
+    assert all(r["source"] == "crunchbase" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_fetch_crunchbase_acquisitions_playwright_unavailable(recon_module):
+    """Returns empty list when Playwright MCP is not available."""
+    async def mock_mcp_call(tool_name, **kwargs):
+        raise RuntimeError("MCP server not configured")
+
+    with patch.object(recon_module, '_call_playwright_mcp', side_effect=mock_mcp_call):
+        results = await recon_module._fetch_crunchbase_acquisitions("Meta")
+
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_crunchbase_acquisitions_no_results(recon_module):
+    """Returns empty list when Crunchbase has no acquisition data."""
+    async def mock_mcp_call(tool_name, **kwargs):
+        if tool_name == "browser_navigate":
+            return {"success": True}
+        if tool_name == "browser_snapshot":
+            return {"content": "No acquisitions found."}
+        if tool_name == "browser_click":
+            return {"success": True}
+        if tool_name == "browser_close":
+            return {"success": True}
+        return {}
+
+    with patch.object(recon_module, '_call_playwright_mcp', side_effect=mock_mcp_call):
+        results = await recon_module._fetch_crunchbase_acquisitions("TinyStartup")
+
+    assert results == []
