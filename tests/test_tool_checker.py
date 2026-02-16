@@ -330,11 +330,11 @@ class TestEscalationChain:
 
     @patch("builtins.input", return_value="n")
     @patch("shutil.which", return_value=None)
-    def test_exits_when_no_options(self, mock_which, mock_input):
+    def test_returns_false_when_no_options(self, mock_which, mock_input):
         info = PlatformInfo(os_type="linux", distro="unknown", pkg_manager="")
         installer = ToolInstaller(info)
-        with pytest.raises(SystemExit):
-            installer.install_with_escalation("assetfinder")
+        result = installer.install_with_escalation("assetfinder")
+        assert result is False
 
 
 class TestToolCheckerRun:

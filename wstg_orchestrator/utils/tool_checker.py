@@ -55,6 +55,18 @@ def _detect_linux_distro() -> str:
     return "unknown"
 
 
+def _detect_wsl() -> bool:
+    """Check if running inside Windows Subsystem for Linux."""
+    try:
+        if os.path.exists("/proc/version"):
+            with open("/proc/version") as f:
+                content = f.read().lower()
+                return "microsoft" in content or "wsl" in content
+    except OSError:
+        pass
+    return False
+
+
 TOOL_REGISTRY = {
     # === Reconnaissance ===
     "subfinder": {
@@ -346,91 +358,48 @@ class ToolInstaller:
         1. Try language installer (go/pip/cargo) -- if runtime missing, offer to install it
         2. If user declines runtime, fall back to system package manager
         3. If no package manager, offer to install one (macOS = Homebrew)
-        4. If nothing works, print friendly message and sys.exit(0)
+        4. If nothing works, return False (caller decides what to do)
         """
         if tool_name not in TOOL_REGISTRY:
-            print(f"\n  Unknown tool: {tool_name}")
-            sys.exit(0)
+            logger.warning("Unknown tool: %s", tool_name)
+            return False
 
         install_info = TOOL_REGISTRY[tool_name]["install"]
 
-        # Step 1: Try language installers
+        # Step 1: Try language installers -- offer to install runtime if missing
         for lang in ("go", "pip", "cargo"):
             if lang not in install_info:
                 continue
-            # Check if runtime is available
             if lang == "pip":
                 runtime_available = shutil.which("pip3") or shutil.which("pip")
             else:
                 runtime_available = shutil.which(lang)
 
             if not runtime_available:
-                # Offer to install the runtime
-                installed_runtime = self._offer_install_runtime(lang)
-                if installed_runtime:
-                    # Re-check after installing runtime
-                    if lang == "pip":
-                        runtime_available = shutil.which("pip3") or shutil.which("pip")
-                    else:
-                        runtime_available = shutil.which(lang)
+                if self._offer_install_runtime(lang):
+                    runtime_available = True
 
             if runtime_available:
-                # Build and run the language install command
-                package = install_info[lang]
-                if lang == "go":
-                    cmd = package
-                elif lang == "pip":
-                    cmd = f"pip3 install --user {package}"
-                elif lang == "cargo":
-                    cmd = f"cargo install {package}"
-                try:
-                    proc = subprocess.run(
-                        cmd, shell=True, capture_output=True, text=True, timeout=300,
-                    )
-                    if proc.returncode == 0:
-                        return True
-                except (subprocess.TimeoutExpired, OSError):
-                    pass
+                # Delegate to install_tool() which uses get_install_command()
+                if self.install_tool(tool_name):
+                    return True
 
         # Step 2: Fall back to system package manager
-        for mgr in ("apt", "dnf", "pacman", "brew"):
-            if mgr not in install_info:
-                continue
-            if self.platform.pkg_manager == mgr:
-                cmd = _build_pkg_install_cmd(mgr, install_info[mgr])
-                try:
-                    proc = subprocess.run(
-                        cmd, shell=True, capture_output=True, text=True, timeout=300,
-                    )
-                    if proc.returncode == 0:
-                        return True
-                except (subprocess.TimeoutExpired, OSError):
-                    pass
+        if self.platform.pkg_manager:
+            if self.install_tool(tool_name):
+                return True
 
-        # Step 3: Offer to install a package manager
+        # Step 3: Offer to install a package manager if none exists
         if not self.platform.pkg_manager:
             installed_mgr = self._offer_install_pkg_manager()
             if installed_mgr:
                 self.platform.pkg_manager = installed_mgr
-                # Retry with the new package manager
-                for mgr in ("apt", "dnf", "pacman", "brew"):
-                    if mgr not in install_info:
-                        continue
-                    if self.platform.pkg_manager == mgr:
-                        cmd = _build_pkg_install_cmd(mgr, install_info[mgr])
-                        try:
-                            proc = subprocess.run(
-                                cmd, shell=True, capture_output=True, text=True, timeout=300,
-                            )
-                            if proc.returncode == 0:
-                                return True
-                        except (subprocess.TimeoutExpired, OSError):
-                            pass
+                if self.install_tool(tool_name):
+                    return True
 
         # Step 4: Nothing worked
-        print(f"\n  Could not install {tool_name}. No available install method for your platform.")
-        print(f"  Please install it manually and try again.\n")
-        sys.exit(0)
+        logger.warning("Could not install %s -- no available install method for this platform", tool_name)
+        return False
 
     def _offer_install_runtime(self, runtime: str) -> bool:
         """Offer to install a language runtime (go/pip/cargo) via system pkg manager."""
@@ -578,7 +547,7 @@ class ToolChecker:
         """Detect OS, check tools, prompt to install missing, return final status."""
         # Step 1: Detect platform
         platform_info = detect_platform()
-        logger.info(f"Platform: {platform_info}")
+        logger.info("Platform: %s", platform_info)
 
         # Step 2: Windows WSL handling
         wsl_result = handle_windows_wsl(platform_info)
@@ -601,28 +570,28 @@ class ToolChecker:
             to_install = prompt_install_missing(missing)
             if to_install:
                 installer = ToolInstaller(platform_info)
+                installed = 0
+                failed = 0
                 for tool_name in to_install:
-                    print(f"Installing {tool_name}...", end=" ", flush=True)
+                    print(f"  Installing {tool_name}...", end=" ", flush=True)
                     success = installer.install_with_escalation(tool_name)
-                    print("✓ done" if success else "✗ failed")
+                    if success:
+                        print("\u2713 done")
+                        installed += 1
+                    else:
+                        print("\u2717 failed")
+                        failed += 1
 
                 # Re-check after installs
                 tool_status = check_tools()
                 still_missing = sum(1 for v in tool_status.values() if not v)
-                if still_missing:
-                    print(f"\n{still_missing} tool(s) still unavailable.")
+                if still_missing == len(tool_status):
+                    print("\n  Without any tools installed, WSTG-Orc cannot operate.")
+                    print("  Please install tools manually and try again. Goodbye!")
+                    sys.exit(0)
+                elif still_missing:
+                    print(f"\n  {installed} installed, {failed} failed. {still_missing} tool(s) still unavailable.")
                 else:
-                    print("\nAll tools installed successfully!")
+                    print("\n  All tools installed successfully!")
 
         return tool_status
-
-
-def _detect_wsl() -> bool:
-    try:
-        if os.path.exists("/proc/version"):
-            with open("/proc/version") as f:
-                content = f.read().lower()
-                return "microsoft" in content or "wsl" in content
-    except OSError:
-        pass
-    return False
