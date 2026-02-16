@@ -117,3 +117,22 @@ def test_oos_path_component_blocks_any_domain(pattern_checker):
 
 def test_oos_path_component_allows_non_matching(pattern_checker):
     assert pattern_checker.is_in_scope("example.com/api/users") is True
+
+
+def test_add_in_scope_hostnames_makes_domain_pass(expanded_checker):
+    """Dynamically added hostnames pass is_in_scope()."""
+    assert expanded_checker.is_in_scope("newdomain.com") is False
+    expanded_checker.add_in_scope_hostnames(["newdomain.com"])
+    assert expanded_checker.is_in_scope("newdomain.com") is True
+
+
+def test_add_in_scope_hostnames_case_insensitive(expanded_checker):
+    """Added hostnames are lowercased for consistent matching."""
+    expanded_checker.add_in_scope_hostnames(["NewDomain.COM"])
+    assert expanded_checker.is_in_scope("newdomain.com") is True
+
+
+def test_add_in_scope_hostnames_no_duplicates(expanded_checker):
+    """Adding an already in-scope hostname doesn't break anything."""
+    expanded_checker.add_in_scope_hostnames(["partner.com"])
+    assert expanded_checker.is_in_scope("partner.com") is True

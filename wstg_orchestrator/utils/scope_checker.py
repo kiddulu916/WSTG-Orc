@@ -36,6 +36,11 @@ class ScopeChecker:
             if hostname:
                 self._in_scope_hostnames.add(hostname)
 
+    def add_in_scope_hostnames(self, hostnames: list[str]):
+        """Dynamically add hostnames to the in-scope set at runtime."""
+        for h in hostnames:
+            self._in_scope_hostnames.add(h.lower())
+
     def is_in_scope(self, target: str) -> bool:
         target_lower = target.lower()
         if "://" not in target_lower:
