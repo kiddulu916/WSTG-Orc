@@ -393,6 +393,44 @@ class ReconModule(BaseModule):
         self.logger.warning(f"crt.sh lookup failed for {domain}")
         return []
 
+    async def _run_github_subdomains(self, domain: str) -> list[str]:
+        token = self._resolve_tool_token("github_subdomains", "GITHUB_TOKEN")
+        if not token:
+            return []
+
+        self.logger.info(f"Running github-subdomains for domain: {domain}")
+        result = self._cmd.run(
+            "github-subdomains", ["-d", domain, "-t", token], timeout=120,
+        )
+        if result.tool_missing:
+            if self._prompt_install_tool("github-subdomains", self.TOOL_INSTALL_COMMANDS["github-subdomains"]):
+                result = self._cmd.run("github-subdomains", ["-d", domain, "-t", token], timeout=120)
+            else:
+                return []
+        if result.returncode == 0:
+            self.evidence.log_tool_output("reconnaissance", "github_subdomains", result.stdout)
+            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        return []
+
+    async def _run_gitlab_subdomains(self, domain: str) -> list[str]:
+        token = self._resolve_tool_token("gitlab_subdomains", "GITLAB_TOKEN")
+        if not token:
+            return []
+
+        self.logger.info(f"Running gitlab-subdomains for domain: {domain}")
+        result = self._cmd.run(
+            "gitlab-subdomains", ["-d", domain, "-t", token], timeout=120,
+        )
+        if result.tool_missing:
+            if self._prompt_install_tool("gitlab-subdomains", self.TOOL_INSTALL_COMMANDS["gitlab-subdomains"]):
+                result = self._cmd.run("gitlab-subdomains", ["-d", domain, "-t", token], timeout=120)
+            else:
+                return []
+        if result.returncode == 0:
+            self.evidence.log_tool_output("reconnaissance", "gitlab_subdomains", result.stdout)
+            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        return []
+
     async def _run_gau(self) -> list[str]:
         all_urls = []
         for domain in self._get_target_domains():

@@ -921,3 +921,47 @@ async def test_run_crtsh_failure(recon_module):
         with patch.object(recon_module._cmd, 'run_pipeline', return_value=mock_result):
             results = await recon_module._run_crtsh("example.com")
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_run_github_subdomains_success(recon_module):
+    mock_result = MagicMock(tool_missing=False, returncode=0,
+                            stdout="api.example.com\ndev.example.com\n")
+    with patch.object(recon_module, '_resolve_tool_token', return_value="ghp_test"):
+        with patch.object(recon_module._cmd, 'run', return_value=mock_result):
+            results = await recon_module._run_github_subdomains("example.com")
+    assert results == ["api.example.com", "dev.example.com"]
+
+
+@pytest.mark.asyncio
+async def test_run_github_subdomains_no_token(recon_module):
+    with patch.object(recon_module, '_resolve_tool_token', return_value=None):
+        results = await recon_module._run_github_subdomains("example.com")
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_run_github_subdomains_missing_prompts_install(recon_module):
+    missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
+    with patch.object(recon_module, '_resolve_tool_token', return_value="ghp_test"):
+        with patch.object(recon_module._cmd, 'run', return_value=missing):
+            with patch.object(recon_module, '_prompt_install_tool', return_value=False):
+                results = await recon_module._run_github_subdomains("example.com")
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_run_gitlab_subdomains_success(recon_module):
+    mock_result = MagicMock(tool_missing=False, returncode=0,
+                            stdout="git.example.com\nci.example.com\n")
+    with patch.object(recon_module, '_resolve_tool_token', return_value="glpat_test"):
+        with patch.object(recon_module._cmd, 'run', return_value=mock_result):
+            results = await recon_module._run_gitlab_subdomains("example.com")
+    assert results == ["git.example.com", "ci.example.com"]
+
+
+@pytest.mark.asyncio
+async def test_run_gitlab_subdomains_no_token(recon_module):
+    with patch.object(recon_module, '_resolve_tool_token', return_value=None):
+        results = await recon_module._run_gitlab_subdomains("example.com")
+    assert results == []
