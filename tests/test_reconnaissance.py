@@ -1,4 +1,6 @@
 # tests/test_reconnaissance.py
+import os
+
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from wstg_orchestrator.modules.reconnaissance import ReconModule
@@ -815,3 +817,75 @@ async def test_execute_runs_acquisition_discovery_after_asn(recon_module):
     assert call_order[0] == "asn_enumeration"
     assert call_order[1] == "acquisition_discovery"
     assert call_order[2] == "passive_osint"
+
+
+@patch("wstg_orchestrator.modules.reconnaissance.cli_input", return_value="ghp_test123")
+def test_resolve_tool_token_from_prompt(mock_input, recon_module):
+    """When no config or env token, prompts user and returns entered token."""
+    recon_module.config.get_tool_config.return_value = {}
+    recon_module.config.update_tool_config = MagicMock()
+    with patch.dict(os.environ, {}, clear=True):
+        token = recon_module._resolve_tool_token("github_subdomains", "GITHUB_TOKEN")
+    assert token == "ghp_test123"
+
+
+@patch("wstg_orchestrator.modules.reconnaissance.cli_input", return_value="")
+def test_resolve_tool_token_blank_skips(mock_input, recon_module):
+    """When user enters blank, returns None."""
+    recon_module.config.get_tool_config.return_value = {}
+    with patch.dict(os.environ, {}, clear=True):
+        token = recon_module._resolve_tool_token("github_subdomains", "GITHUB_TOKEN")
+    assert token is None
+
+
+def test_resolve_tool_token_from_config(recon_module):
+    """Token from config YAML is preferred."""
+    recon_module.config.get_tool_config.return_value = {"token": "config_token"}
+    token = recon_module._resolve_tool_token("github_subdomains", "GITHUB_TOKEN")
+    assert token == "config_token"
+
+
+def test_resolve_tool_token_from_env(recon_module):
+    """Falls back to env var when config has no token."""
+    recon_module.config.get_tool_config.return_value = {}
+    with patch.dict(os.environ, {"GITHUB_TOKEN": "env_token"}):
+        token = recon_module._resolve_tool_token("github_subdomains", "GITHUB_TOKEN")
+    assert token == "env_token"
+
+
+@patch("wstg_orchestrator.modules.reconnaissance.cli_input", return_value="new_token")
+def test_resolve_tool_token_saves_to_config(mock_input, recon_module):
+    """When user enters a token interactively, it's saved to config."""
+    recon_module.config.get_tool_config.return_value = {}
+    recon_module.config.update_tool_config = MagicMock()
+    with patch.dict(os.environ, {}, clear=True):
+        token = recon_module._resolve_tool_token("github_subdomains", "GITHUB_TOKEN")
+    recon_module.config.update_tool_config.assert_called_once_with("github_subdomains", "token", "new_token")
+
+
+@pytest.mark.asyncio
+async def test_run_assetfinder_success(recon_module):
+    mock_result = MagicMock(tool_missing=False, returncode=0,
+                            stdout="sub1.example.com\nsub2.example.com\n")
+    with patch.object(recon_module._cmd, 'run', return_value=mock_result):
+        results = await recon_module._run_assetfinder("example.com")
+    assert results == ["sub1.example.com", "sub2.example.com"]
+
+
+@pytest.mark.asyncio
+async def test_run_assetfinder_missing_prompts_install(recon_module):
+    missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
+    success = MagicMock(tool_missing=False, returncode=0, stdout="sub.example.com\n", stderr="")
+    with patch.object(recon_module._cmd, 'run', side_effect=[missing, success]):
+        with patch.object(recon_module, '_prompt_install_tool', return_value=True):
+            results = await recon_module._run_assetfinder("example.com")
+    assert results == ["sub.example.com"]
+
+
+@pytest.mark.asyncio
+async def test_run_assetfinder_missing_declined(recon_module):
+    missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
+    with patch.object(recon_module._cmd, 'run', return_value=missing):
+        with patch.object(recon_module, '_prompt_install_tool', return_value=False):
+            results = await recon_module._run_assetfinder("example.com")
+    assert results == []

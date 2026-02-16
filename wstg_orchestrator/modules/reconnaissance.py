@@ -31,6 +31,13 @@ class ReconModule(BaseModule):
     TOOL_INSTALL_COMMANDS = {
         "amass": "go install -v github.com/owasp-amass/amass/v4/...@master",
         "whois": "apt install whois",
+        "assetfinder": "go install -v github.com/tomnomnom/assetfinder@latest",
+        "github-subdomains": "go install -v github.com/gwen001/github-subdomains@latest",
+        "gitlab-subdomains": "go install -v github.com/gwen001/gitlab-subdomains@latest",
+        "altdns": "pip install py-altdns",
+        "puredns": "go install -v github.com/d3mondev/puredns/v2@latest",
+        "curl": "apt install curl",
+        "jq": "apt install jq",
     }
 
     def __init__(self, *args, **kwargs):
@@ -38,7 +45,11 @@ class ReconModule(BaseModule):
         self._cmd = CommandRunner(
             tool_configs={
                 name: self.config.get_tool_config(name)
-                for name in ["subfinder", "amass", "gau", "httpx", "whois"]
+                for name in [
+                    "subfinder", "amass", "gau", "httpx", "whois",
+                    "assetfinder", "github_subdomains", "gitlab_subdomains",
+                    "altdns", "puredns",
+                ]
             }
         )
 
@@ -129,6 +140,36 @@ class ReconModule(BaseModule):
         except Exception as e:
             self.logger.error(f"Error installing {tool_name}: {e}")
         return False
+
+    def _resolve_tool_token(self, tool_config_name: str, env_var: str) -> str | None:
+        """Resolve an API token from config -> env -> interactive prompt.
+
+        Returns the token string, or None if unavailable/skipped.
+        """
+        import os
+
+        # 1. Check config YAML
+        cfg = self.config.get_tool_config(tool_config_name)
+        token = cfg.get("token")
+        if token:
+            return token
+
+        # 2. Check environment variable
+        token = os.environ.get(env_var)
+        if token:
+            return token
+
+        # 3. Interactive prompt
+        self.logger.warning(f"No {env_var} found in config or environment.")
+        token = cli_input(f"Enter {env_var} (blank to skip {tool_config_name}): ").strip()
+        if not token:
+            self.logger.info(f"No token provided, skipping {tool_config_name}")
+            return None
+
+        # Save to config for future runs
+        self.config.update_tool_config(tool_config_name, "token", token)
+        self.logger.info(f"Token saved to config for {tool_config_name}")
+        return token
 
     async def _run_amass_intel_org(self, company_name: str):
         """Run amass intel -org to discover ASNs for a company."""
@@ -315,6 +356,19 @@ class ReconModule(BaseModule):
             return []
         if result.returncode == 0:
             self.evidence.log_tool_output("reconnaissance", "amass", result.stdout)
+            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        return []
+
+    async def _run_assetfinder(self, domain: str) -> list[str]:
+        self.logger.info(f"Running assetfinder for domain: {domain}")
+        result = self._cmd.run("assetfinder", ["--subs-only", domain], timeout=120)
+        if result.tool_missing:
+            if self._prompt_install_tool("assetfinder", self.TOOL_INSTALL_COMMANDS["assetfinder"]):
+                result = self._cmd.run("assetfinder", ["--subs-only", domain], timeout=120)
+            else:
+                return []
+        if result.returncode == 0:
+            self.evidence.log_tool_output("reconnaissance", "assetfinder", result.stdout)
             return [line.strip() for line in result.stdout.splitlines() if line.strip()]
         return []
 
