@@ -2,7 +2,7 @@ import os
 import platform
 import pytest
 from unittest.mock import patch, mock_open, MagicMock
-from wstg_orchestrator.utils.tool_checker import PlatformInfo, detect_platform
+from wstg_orchestrator.utils.tool_checker import PlatformInfo, detect_platform, TOOL_REGISTRY
 
 
 class TestDetectPlatform:
@@ -73,3 +73,48 @@ class TestDetectPlatform:
         info = detect_platform()
         assert info.distro == "arch"
         assert info.pkg_manager == "pacman"
+
+
+class TestToolRegistry:
+    def test_registry_has_all_recon_tools(self):
+        recon_tools = ["subfinder", "amass", "assetfinder", "github-subdomains",
+                       "gitlab-subdomains", "altdns", "puredns", "whois", "gau",
+                       "httpx", "curl", "jq"]
+        for tool in recon_tools:
+            assert tool in TOOL_REGISTRY, f"Missing: {tool}"
+            assert "reconnaissance" in TOOL_REGISTRY[tool]["required_by"]
+
+    def test_registry_has_fingerprinting_tools(self):
+        for tool in ["nmap", "whatweb"]:
+            assert tool in TOOL_REGISTRY
+            assert "fingerprinting" in TOOL_REGISTRY[tool]["required_by"]
+
+    def test_registry_has_config_testing_tools(self):
+        assert "gobuster" in TOOL_REGISTRY
+        assert "configuration_testing" in TOOL_REGISTRY["gobuster"]["required_by"]
+
+    def test_registry_has_input_validation_tools(self):
+        for tool in ["sqlmap", "commix"]:
+            assert tool in TOOL_REGISTRY
+            assert "input_validation" in TOOL_REGISTRY[tool]["required_by"]
+
+    def test_registry_has_api_testing_tools(self):
+        assert "kiterunner" in TOOL_REGISTRY
+        assert "api_testing" in TOOL_REGISTRY["kiterunner"]["required_by"]
+
+    def test_registry_has_seclists(self):
+        assert "seclists" in TOOL_REGISTRY
+
+    def test_each_tool_has_check_cmd(self):
+        for name, info in TOOL_REGISTRY.items():
+            assert "check_cmd" in info, f"{name} missing check_cmd"
+
+    def test_each_tool_has_install_dict(self):
+        for name, info in TOOL_REGISTRY.items():
+            assert "install" in info, f"{name} missing install"
+            assert isinstance(info["install"], dict)
+
+    def test_each_tool_has_required_by(self):
+        for name, info in TOOL_REGISTRY.items():
+            assert "required_by" in info, f"{name} missing required_by"
+            assert isinstance(info["required_by"], list)
