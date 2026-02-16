@@ -5,6 +5,7 @@ from wstg_orchestrator.utils.scope_checker import ScopeChecker
 
 class ConfigLoader:
     def __init__(self, config_path: str):
+        self.config_path = config_path
         with open(config_path, "r") as f:
             self._raw = yaml.safe_load(f)
         self._scope = self._raw.get("program_scope", {})
@@ -96,3 +97,19 @@ class ConfigLoader:
     def save(self, path: str):
         with open(path, "w") as f:
             yaml.dump(self._raw, f, default_flow_style=False, sort_keys=False)
+
+    def append_in_scope_urls(self, urls: list[str]):
+        """Append URLs to in_scope_urls in both memory and YAML on disk.
+
+        Deduplicates against existing entries. Writes to self.config_path.
+        """
+        if not urls:
+            return
+        current = self._scope.get("in_scope_urls", [])
+        new_urls = [u for u in urls if u not in current]
+        if not new_urls:
+            return
+        current.extend(new_urls)
+        self._scope["in_scope_urls"] = current
+        self._raw.setdefault("program_scope", {})["in_scope_urls"] = current
+        self.save(self.config_path)

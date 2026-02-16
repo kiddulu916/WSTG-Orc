@@ -170,3 +170,46 @@ def test_scope_checker_uses_wildcard_and_in_scope():
         assert checker.is_in_scope("evil.com") is False
     finally:
         os.remove(path)
+
+
+def test_config_path_stored(config_file):
+    """ConfigLoader stores the config file path."""
+    config = ConfigLoader(config_file)
+    assert config.config_path == config_file
+
+
+def test_append_in_scope_urls_adds_to_memory(config_file):
+    """append_in_scope_urls updates in-memory in_scope_urls."""
+    config = ConfigLoader(config_file)
+    config.append_in_scope_urls(["newdomain.com", "another.com"])
+    assert "newdomain.com" in config.in_scope_urls
+    assert "another.com" in config.in_scope_urls
+
+
+def test_append_in_scope_urls_persists_to_yaml(config_file):
+    """append_in_scope_urls writes changes to the YAML file on disk."""
+    config = ConfigLoader(config_file)
+    original_count = len(config.in_scope_urls)
+    config.append_in_scope_urls(["persisted.com"])
+
+    # Reload from disk
+    reloaded = ConfigLoader(config_file)
+    assert "persisted.com" in reloaded.in_scope_urls
+    assert len(reloaded.in_scope_urls) == original_count + 1
+
+
+def test_append_in_scope_urls_deduplicates(config_file):
+    """Already present URLs are not duplicated."""
+    config = ConfigLoader(config_file)
+    existing = list(config.in_scope_urls)
+    config.append_in_scope_urls([existing[0], "brand-new.com"])
+    assert config.in_scope_urls.count(existing[0]) == 1
+    assert "brand-new.com" in config.in_scope_urls
+
+
+def test_append_in_scope_urls_empty_list(config_file):
+    """Appending empty list is a no-op."""
+    config = ConfigLoader(config_file)
+    before = list(config.in_scope_urls)
+    config.append_in_scope_urls([])
+    assert config.in_scope_urls == before
