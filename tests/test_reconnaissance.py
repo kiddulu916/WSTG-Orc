@@ -40,8 +40,20 @@ def test_subcategories(recon_module):
 
 @pytest.mark.asyncio
 async def test_passive_osint_runs_subfinder(recon_module):
+    async def noop(domain=None):
+        return []
+    async def noop_list(subs):
+        return []
+
     with patch.object(recon_module, '_run_subfinder', new_callable=AsyncMock, return_value=["sub.example.com"]):
-        await recon_module._passive_osint()
+        with patch.object(recon_module, '_run_assetfinder', side_effect=noop):
+            with patch.object(recon_module, '_run_crtsh', side_effect=noop):
+                with patch.object(recon_module, '_run_amass', side_effect=noop):
+                    with patch.object(recon_module, '_run_github_subdomains', side_effect=noop):
+                        with patch.object(recon_module, '_run_gitlab_subdomains', side_effect=noop):
+                            with patch.object(recon_module, '_run_altdns', side_effect=noop_list):
+                                with patch.object(recon_module, '_run_puredns', side_effect=noop_list):
+                                    await recon_module._passive_osint()
         recon_module.state.enrich.assert_any_call("discovered_subdomains", ["sub.example.com"])
 
 
@@ -55,8 +67,20 @@ async def test_passive_osint_uses_enumeration_domains(recon_module):
         calls.append(domain)
         return [f"sub.{domain}"]
 
+    async def noop(domain=None):
+        return []
+    async def noop_list(subs):
+        return []
+
     with patch.object(recon_module, '_run_subfinder', side_effect=mock_subfinder):
-        await recon_module._passive_osint()
+        with patch.object(recon_module, '_run_assetfinder', side_effect=noop):
+            with patch.object(recon_module, '_run_crtsh', side_effect=noop):
+                with patch.object(recon_module, '_run_amass', side_effect=noop):
+                    with patch.object(recon_module, '_run_github_subdomains', side_effect=noop):
+                        with patch.object(recon_module, '_run_gitlab_subdomains', side_effect=noop):
+                            with patch.object(recon_module, '_run_altdns', side_effect=noop_list):
+                                with patch.object(recon_module, '_run_puredns', side_effect=noop_list):
+                                    await recon_module._passive_osint()
         assert calls == ["example.com", "api.example.com", "partner.com"]
 
 
@@ -1056,3 +1080,151 @@ async def test_run_puredns_missing_declined(recon_module):
         with patch.object(recon_module, '_prompt_install_tool', return_value=False):
             results = await recon_module._run_puredns(["sub.example.com"])
     assert results == []
+
+
+# --- Passive OSINT Phase 1 + Phase 2 integration tests ---
+
+
+@pytest.mark.asyncio
+async def test_passive_osint_runs_all_tools_parallel(recon_module):
+    """All Phase 1 tools are called for each domain."""
+    tool_calls = []
+
+    async def mock_subfinder(domain=None):
+        tool_calls.append("subfinder")
+        return ["sub1.example.com"]
+
+    async def mock_assetfinder(domain):
+        tool_calls.append("assetfinder")
+        return ["sub2.example.com"]
+
+    async def mock_crtsh(domain):
+        tool_calls.append("crtsh")
+        return ["sub3.example.com"]
+
+    async def mock_amass(domain=None):
+        tool_calls.append("amass")
+        return ["sub4.example.com"]
+
+    async def mock_github(domain):
+        tool_calls.append("github")
+        return ["sub5.example.com"]
+
+    async def mock_gitlab(domain):
+        tool_calls.append("gitlab")
+        return ["sub6.example.com"]
+
+    async def mock_altdns(subs):
+        tool_calls.append("altdns")
+        return ["dev.sub1.example.com"]
+
+    async def mock_puredns(subs):
+        tool_calls.append("puredns")
+        return ["dev.sub1.example.com"]
+
+    with patch.object(recon_module, '_run_subfinder', side_effect=mock_subfinder):
+        with patch.object(recon_module, '_run_assetfinder', side_effect=mock_assetfinder):
+            with patch.object(recon_module, '_run_crtsh', side_effect=mock_crtsh):
+                with patch.object(recon_module, '_run_amass', side_effect=mock_amass):
+                    with patch.object(recon_module, '_run_github_subdomains', side_effect=mock_github):
+                        with patch.object(recon_module, '_run_gitlab_subdomains', side_effect=mock_gitlab):
+                            with patch.object(recon_module, '_run_altdns', side_effect=mock_altdns):
+                                with patch.object(recon_module, '_run_puredns', side_effect=mock_puredns):
+                                    await recon_module._passive_osint()
+
+    assert "subfinder" in tool_calls
+    assert "assetfinder" in tool_calls
+    assert "crtsh" in tool_calls
+    assert "amass" in tool_calls
+    assert "github" in tool_calls
+    assert "gitlab" in tool_calls
+    assert "altdns" in tool_calls
+    assert "puredns" in tool_calls
+
+
+@pytest.mark.asyncio
+async def test_passive_osint_deduplicates_results(recon_module):
+    """Duplicate subdomains from multiple tools are deduplicated."""
+    async def mock_subfinder(domain=None):
+        return ["sub.example.com", "api.example.com"]
+    async def mock_assetfinder(domain):
+        return ["sub.example.com", "cdn.example.com"]
+    async def noop(domain=None):
+        return []
+    async def noop_list(subs):
+        return []
+
+    with patch.object(recon_module, '_run_subfinder', side_effect=mock_subfinder):
+        with patch.object(recon_module, '_run_assetfinder', side_effect=mock_assetfinder):
+            with patch.object(recon_module, '_run_crtsh', side_effect=noop):
+                with patch.object(recon_module, '_run_amass', side_effect=noop):
+                    with patch.object(recon_module, '_run_github_subdomains', side_effect=noop):
+                        with patch.object(recon_module, '_run_gitlab_subdomains', side_effect=noop):
+                            with patch.object(recon_module, '_run_altdns', side_effect=noop_list):
+                                with patch.object(recon_module, '_run_puredns', side_effect=noop_list):
+                                    await recon_module._passive_osint()
+
+    for call in recon_module.state.enrich.call_args_list:
+        if call.args[0] == "discovered_subdomains":
+            subs = call.args[1]
+            assert len(subs) == len(set(subs))
+            assert "sub.example.com" in subs
+            assert "api.example.com" in subs
+            assert "cdn.example.com" in subs
+            break
+
+
+@pytest.mark.asyncio
+async def test_passive_osint_skips_phase2_when_empty(recon_module):
+    """altdns/puredns are not called when Phase 1 returns nothing."""
+    async def noop(domain=None):
+        return []
+    altdns_called = False
+    async def mock_altdns(subs):
+        nonlocal altdns_called
+        altdns_called = True
+        return []
+
+    recon_module.scope.is_in_scope.return_value = False
+
+    with patch.object(recon_module, '_run_subfinder', side_effect=noop):
+        with patch.object(recon_module, '_run_assetfinder', side_effect=noop):
+            with patch.object(recon_module, '_run_crtsh', side_effect=noop):
+                with patch.object(recon_module, '_run_amass', side_effect=noop):
+                    with patch.object(recon_module, '_run_github_subdomains', side_effect=noop):
+                        with patch.object(recon_module, '_run_gitlab_subdomains', side_effect=noop):
+                            with patch.object(recon_module, '_run_altdns', side_effect=mock_altdns):
+                                with patch.object(recon_module, '_run_puredns', return_value=[]):
+                                    await recon_module._passive_osint()
+
+    assert not altdns_called
+
+
+@pytest.mark.asyncio
+async def test_passive_osint_phase2_adds_resolved_permutations(recon_module):
+    """Resolved permutations from puredns are added to discovered_subdomains."""
+    async def mock_subfinder(domain=None):
+        return ["sub.example.com"]
+    async def noop(domain=None):
+        return []
+    async def mock_altdns(subs):
+        return ["dev.sub.example.com", "staging.sub.example.com"]
+    async def mock_puredns(subs):
+        return ["dev.sub.example.com"]
+
+    with patch.object(recon_module, '_run_subfinder', side_effect=mock_subfinder):
+        with patch.object(recon_module, '_run_assetfinder', side_effect=noop):
+            with patch.object(recon_module, '_run_crtsh', side_effect=noop):
+                with patch.object(recon_module, '_run_amass', side_effect=noop):
+                    with patch.object(recon_module, '_run_github_subdomains', side_effect=noop):
+                        with patch.object(recon_module, '_run_gitlab_subdomains', side_effect=noop):
+                            with patch.object(recon_module, '_run_altdns', side_effect=mock_altdns):
+                                with patch.object(recon_module, '_run_puredns', side_effect=mock_puredns):
+                                    await recon_module._passive_osint()
+
+    all_subs = []
+    for call in recon_module.state.enrich.call_args_list:
+        if call.args[0] == "discovered_subdomains":
+            all_subs.extend(call.args[1])
+    assert "dev.sub.example.com" in all_subs
+    assert "sub.example.com" in all_subs

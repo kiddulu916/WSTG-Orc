@@ -275,17 +275,47 @@ class ReconModule(BaseModule):
 
     async def _passive_osint(self):
         self.logger.info("Starting passive OSINT - subdomain enumeration")
-        all_subdomains = []
 
         target_domains = self._get_target_domains()
+
+        # Phase 1: Run all discovery tools in parallel per domain
+        all_subdomains = []
         for domain in target_domains:
-            subfinder_results = await self._run_subfinder(domain)
-            all_subdomains.extend(subfinder_results)
+            results = await asyncio.gather(
+                self._run_subfinder(domain),
+                self._run_assetfinder(domain),
+                self._run_crtsh(domain),
+                self._run_amass(domain),
+                self._run_github_subdomains(domain),
+                self._run_gitlab_subdomains(domain),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, list):
+                    all_subdomains.extend(result)
+                elif isinstance(result, Exception):
+                    self.logger.warning(f"Tool failed for {domain}: {result}")
 
         all_subdomains = list(set(self._filter_in_scope(all_subdomains)))
         self.state.enrich("discovered_subdomains", all_subdomains)
         self.evidence.log_parsed("reconnaissance", "subdomains", all_subdomains)
-        self.logger.info(f"Found {len(all_subdomains)} subdomains")
+        self.logger.info(f"Phase 1: Found {len(all_subdomains)} unique subdomains")
+
+        # Phase 2: Permutation + Resolution
+        if not all_subdomains:
+            self.logger.warning("No subdomains found, skipping permutation phase")
+            return
+
+        permutations = await self._run_altdns(all_subdomains)
+        if permutations:
+            resolved = await self._run_puredns(permutations)
+            if resolved:
+                resolved = list(set(self._filter_in_scope(resolved)))
+                self.state.enrich("discovered_subdomains", resolved)
+                self.evidence.log_parsed("reconnaissance", "permutation_subdomains", resolved)
+                self.logger.info(f"Phase 2: Resolved {len(resolved)} permutation subdomains")
+        else:
+            self.logger.info("No permutations generated, skipping resolution")
 
     async def _url_harvesting(self):
         """Harvest URLs from gau/wayback and parse into three buckets."""
@@ -338,8 +368,8 @@ class ReconModule(BaseModule):
             "subfinder", ["-d", target, "-silent"], timeout=300,
         )
         if result.tool_missing:
-            self.logger.warning("subfinder not found, trying amass")
-            return await self._run_amass(target)
+            self.logger.warning("subfinder not found, skipping")
+            return []
         if result.returncode == 0:
             self.evidence.log_tool_output("reconnaissance", "subfinder", result.stdout)
             return [line.strip() for line in result.stdout.splitlines() if line.strip()]
