@@ -81,3 +81,38 @@ class CommandRunner:
                 tool=tool, args=merged_args,
                 returncode=-1, stderr=str(e),
             )
+
+    def run_pipeline(
+        self,
+        description: str,
+        command: str,
+        timeout: int = 120,
+        cwd: str | None = None,
+    ) -> CommandResult:
+        """Run a shell pipeline command (e.g. 'curl ... | jq ...')."""
+        try:
+            proc = subprocess.run(
+                ["bash", "-o", "pipefail", "-c", command],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=cwd,
+            )
+            return CommandResult(
+                tool=description, args=[command],
+                returncode=proc.returncode,
+                stdout=proc.stdout, stderr=proc.stderr,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Pipeline timed out after {timeout}s: {description}")
+            return CommandResult(
+                tool=description, args=[command],
+                returncode=-1, timed_out=True,
+                stderr=f"Timed out after {timeout}s",
+            )
+        except Exception as e:
+            logger.error(f"Error running pipeline {description}: {e}")
+            return CommandResult(
+                tool=description, args=[command],
+                returncode=-1, stderr=str(e),
+            )
