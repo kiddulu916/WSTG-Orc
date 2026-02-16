@@ -28,6 +28,9 @@ class ReconModule(BaseModule):
     _WIKI_LINK_RE = re.compile(
         r'\[https?://([^\s/\]]+)(?:/[^\s\]]*)?\s+([^\]]+)\]'
     )
+    SECLISTS_BASE = "/usr/share/wordlists/seclists"
+    SECLISTS_WORDLIST = f"{SECLISTS_BASE}/Discovery/DNS/n0kovo_subdomains.txt"
+    SECLISTS_RESOLVERS = f"{SECLISTS_BASE}/Miscellaneous/dns-resolvers.txt"
     TOOL_INSTALL_COMMANDS = {
         "amass": "go install -v github.com/owasp-amass/amass/v4/...@master",
         "whois": "apt install whois",
@@ -38,6 +41,7 @@ class ReconModule(BaseModule):
         "puredns": "go install -v github.com/d3mondev/puredns/v2@latest",
         "curl": "apt install curl",
         "jq": "apt install jq",
+        "seclists": "apt install seclists",
     }
 
     def __init__(self, *args, **kwargs):
@@ -461,10 +465,12 @@ class ReconModule(BaseModule):
             return [line.strip() for line in result.stdout.splitlines() if line.strip()]
         return []
 
-    def _get_data_file(self, filename: str) -> str:
-        """Return path to a bundled data file."""
+    def _ensure_seclists(self) -> bool:
+        """Check if SecLists is installed, prompt to install if not. Returns True if available."""
         import os
-        return os.path.join(os.path.dirname(__file__), "..", "..", "data", filename)
+        if os.path.isdir(self.SECLISTS_BASE):
+            return True
+        return self._prompt_install_tool("seclists", self.TOOL_INSTALL_COMMANDS["seclists"])
 
     async def _run_altdns(self, subdomains: list[str]) -> list[str]:
         if not subdomains:
@@ -482,9 +488,15 @@ class ReconModule(BaseModule):
         fd_out, output_file = tempfile.mkstemp(suffix="_altdns_out.txt")
         os.close(fd_out)
 
-        # Resolve wordlist
+        # Resolve wordlist: config override → seclists → skip
         cfg = self.config.get_tool_config("altdns")
-        wordlist = cfg.get("wordlist", self._get_data_file("altdns-words.txt"))
+        wordlist = cfg.get("wordlist")
+        if not wordlist:
+            if not self._ensure_seclists():
+                os.unlink(input_file)
+                os.unlink(output_file)
+                return []
+            wordlist = self.SECLISTS_WORDLIST
 
         result = self._cmd.run(
             "altdns", ["-i", input_file, "-o", output_file, "-w", wordlist],
@@ -525,8 +537,14 @@ class ReconModule(BaseModule):
         with os.fdopen(fd, "w") as f:
             f.write("\n".join(subdomains))
 
+        # Resolve resolvers file: config override → seclists → skip
         cfg = self.config.get_tool_config("puredns")
-        resolvers = cfg.get("resolvers", self._get_data_file("resolvers.txt"))
+        resolvers = cfg.get("resolvers")
+        if not resolvers:
+            if not self._ensure_seclists():
+                os.unlink(input_file)
+                return []
+            resolvers = self.SECLISTS_RESOLVERS
 
         result = self._cmd.run(
             "puredns", ["resolve", input_file, "--resolvers", resolvers],

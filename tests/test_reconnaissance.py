@@ -991,12 +991,20 @@ async def test_run_gitlab_subdomains_no_token(recon_module):
     assert results == []
 
 
-# --- _get_data_file tests ---
+# --- _ensure_seclists tests ---
 
-def test_get_data_file_returns_path(recon_module):
-    """_get_data_file returns a path under data/ directory."""
-    path = recon_module._get_data_file("altdns-words.txt")
-    assert path.endswith(os.path.join("data", "altdns-words.txt"))
+def test_ensure_seclists_installed(recon_module):
+    """Returns True when seclists directory exists."""
+    with patch("os.path.isdir", return_value=True):
+        assert recon_module._ensure_seclists() is True
+
+
+def test_ensure_seclists_not_installed_prompts(recon_module):
+    """When seclists not found, prompts to install."""
+    with patch("os.path.isdir", return_value=False):
+        with patch.object(recon_module, '_prompt_install_tool', return_value=False) as mock_prompt:
+            assert recon_module._ensure_seclists() is False
+            mock_prompt.assert_called_once_with("seclists", "apt install seclists")
 
 
 # --- _run_altdns tests ---
@@ -1012,9 +1020,18 @@ async def test_run_altdns_empty_input(recon_module):
 async def test_run_altdns_missing_declined(recon_module):
     """When altdns is missing and install declined, returns empty."""
     missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
-    with patch.object(recon_module._cmd, 'run', return_value=missing):
-        with patch.object(recon_module, '_prompt_install_tool', return_value=False):
-            results = await recon_module._run_altdns(["sub.example.com"])
+    with patch.object(recon_module, '_ensure_seclists', return_value=True):
+        with patch.object(recon_module._cmd, 'run', return_value=missing):
+            with patch.object(recon_module, '_prompt_install_tool', return_value=False):
+                results = await recon_module._run_altdns(["sub.example.com"])
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_run_altdns_seclists_missing_declined(recon_module):
+    """When seclists is missing and install declined, returns empty without running altdns."""
+    with patch.object(recon_module, '_ensure_seclists', return_value=False):
+        results = await recon_module._run_altdns(["sub.example.com"])
     assert results == []
 
 
@@ -1026,8 +1043,6 @@ async def test_run_altdns_success(recon_module):
     import tempfile as real_tempfile
     import os as real_os
 
-    # We need mkstemp to return real, open file descriptors each time it's called.
-    # The method calls mkstemp twice: once for input (uses os.fdopen), once for output (uses os.close).
     real_input = real_tempfile.mktemp(suffix="_test_in.txt")
     real_output = real_tempfile.mktemp(suffix="_test_out.txt")
 
@@ -1037,19 +1052,18 @@ async def test_run_altdns_success(recon_module):
             return (fd, real_input)
         else:
             fd = real_os.open(real_output, real_os.O_CREAT | real_os.O_WRONLY, 0o600)
-            # Pre-write the expected altdns output so it's there after "run"
             real_os.write(fd, b"dev.sub.example.com\nstaging.sub.example.com\n")
             real_os.lseek(fd, 0, real_os.SEEK_SET)
             return (fd, real_output)
 
-    with patch("tempfile.mkstemp", side_effect=fake_mkstemp):
-        with patch.object(recon_module._cmd, 'run', return_value=mock_result):
-            results = await recon_module._run_altdns(["sub.example.com"])
+    with patch.object(recon_module, '_ensure_seclists', return_value=True):
+        with patch("tempfile.mkstemp", side_effect=fake_mkstemp):
+            with patch.object(recon_module._cmd, 'run', return_value=mock_result):
+                results = await recon_module._run_altdns(["sub.example.com"])
 
     assert "dev.sub.example.com" in results
     assert "staging.sub.example.com" in results
 
-    # Clean up if files still exist
     for f in [real_input, real_output]:
         if real_os.path.exists(f):
             real_os.unlink(f)
@@ -1062,8 +1076,9 @@ async def test_run_puredns_success(recon_module):
     """puredns resolves subdomains from stdout."""
     mock_result = MagicMock(tool_missing=False, returncode=0,
                             stdout="dev.sub.example.com\n")
-    with patch.object(recon_module._cmd, 'run', return_value=mock_result):
-        results = await recon_module._run_puredns(["dev.sub.example.com", "staging.sub.example.com"])
+    with patch.object(recon_module, '_ensure_seclists', return_value=True):
+        with patch.object(recon_module._cmd, 'run', return_value=mock_result):
+            results = await recon_module._run_puredns(["dev.sub.example.com", "staging.sub.example.com"])
     assert results == ["dev.sub.example.com"]
 
 
@@ -1076,9 +1091,18 @@ async def test_run_puredns_empty_input(recon_module):
 @pytest.mark.asyncio
 async def test_run_puredns_missing_declined(recon_module):
     missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
-    with patch.object(recon_module._cmd, 'run', return_value=missing):
-        with patch.object(recon_module, '_prompt_install_tool', return_value=False):
-            results = await recon_module._run_puredns(["sub.example.com"])
+    with patch.object(recon_module, '_ensure_seclists', return_value=True):
+        with patch.object(recon_module._cmd, 'run', return_value=missing):
+            with patch.object(recon_module, '_prompt_install_tool', return_value=False):
+                results = await recon_module._run_puredns(["sub.example.com"])
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_run_puredns_seclists_missing_declined(recon_module):
+    """When seclists is missing and install declined, returns empty."""
+    with patch.object(recon_module, '_ensure_seclists', return_value=False):
+        results = await recon_module._run_puredns(["sub.example.com"])
     assert results == []
 
 
