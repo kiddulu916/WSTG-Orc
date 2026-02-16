@@ -222,6 +222,18 @@ TOOL_REGISTRY = {
 }
 
 
+def check_tools() -> dict[str, bool]:
+    """Check availability of all registered tools. Returns {tool_name: is_available}."""
+    status = {}
+    for name, info in TOOL_REGISTRY.items():
+        check_path = info.get("check_path")
+        if check_path:
+            status[name] = os.path.isdir(check_path)
+        else:
+            status[name] = shutil.which(info["check_cmd"]) is not None
+    return status
+
+
 def _detect_wsl() -> bool:
     try:
         if os.path.exists("/proc/version"):

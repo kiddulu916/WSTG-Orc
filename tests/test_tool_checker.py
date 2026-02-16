@@ -2,7 +2,7 @@ import os
 import platform
 import pytest
 from unittest.mock import patch, mock_open, MagicMock
-from wstg_orchestrator.utils.tool_checker import PlatformInfo, detect_platform, TOOL_REGISTRY
+from wstg_orchestrator.utils.tool_checker import PlatformInfo, detect_platform, TOOL_REGISTRY, check_tools
 
 
 class TestDetectPlatform:
@@ -118,3 +118,29 @@ class TestToolRegistry:
         for name, info in TOOL_REGISTRY.items():
             assert "required_by" in info, f"{name} missing required_by"
             assert isinstance(info["required_by"], list)
+
+
+class TestCheckTools:
+    @patch("shutil.which")
+    @patch("os.path.isdir", return_value=True)
+    def test_all_tools_found(self, mock_isdir, mock_which):
+        mock_which.return_value = "/usr/bin/tool"
+        status = check_tools()
+        assert all(status.values())
+        assert len(status) == len(TOOL_REGISTRY)
+
+    @patch("shutil.which", return_value=None)
+    @patch("os.path.isdir", return_value=False)
+    def test_no_tools_found(self, mock_isdir, mock_which):
+        status = check_tools()
+        assert not any(status.values())
+
+    @patch("shutil.which")
+    @patch("os.path.isdir", return_value=True)
+    def test_partial_tools(self, mock_isdir, mock_which):
+        def which_side_effect(name):
+            return "/usr/bin/nmap" if name == "nmap" else None
+        mock_which.side_effect = which_side_effect
+        status = check_tools()
+        assert status["nmap"] is True
+        assert status["subfinder"] is False
