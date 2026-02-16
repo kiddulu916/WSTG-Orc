@@ -431,6 +431,96 @@ class ReconModule(BaseModule):
             return [line.strip() for line in result.stdout.splitlines() if line.strip()]
         return []
 
+    def _get_data_file(self, filename: str) -> str:
+        """Return path to a bundled data file."""
+        import os
+        return os.path.join(os.path.dirname(__file__), "..", "..", "data", filename)
+
+    async def _run_altdns(self, subdomains: list[str]) -> list[str]:
+        if not subdomains:
+            return []
+
+        import tempfile, os
+        self.logger.info(f"Running altdns permutations on {len(subdomains)} subdomains")
+
+        # Write input file
+        fd_in, input_file = tempfile.mkstemp(suffix="_altdns_in.txt")
+        with os.fdopen(fd_in, "w") as f:
+            f.write("\n".join(subdomains))
+
+        # Output file
+        fd_out, output_file = tempfile.mkstemp(suffix="_altdns_out.txt")
+        os.close(fd_out)
+
+        # Resolve wordlist
+        cfg = self.config.get_tool_config("altdns")
+        wordlist = cfg.get("wordlist", self._get_data_file("altdns-words.txt"))
+
+        result = self._cmd.run(
+            "altdns", ["-i", input_file, "-o", output_file, "-w", wordlist],
+            timeout=300,
+        )
+        if result.tool_missing:
+            if self._prompt_install_tool("altdns", self.TOOL_INSTALL_COMMANDS["altdns"]):
+                result = self._cmd.run(
+                    "altdns", ["-i", input_file, "-o", output_file, "-w", wordlist],
+                    timeout=300,
+                )
+            else:
+                os.unlink(input_file)
+                os.unlink(output_file)
+                return []
+
+        os.unlink(input_file)
+
+        if result.returncode == 0:
+            with open(output_file) as f:
+                permutations = [line.strip() for line in f.read().splitlines() if line.strip()]
+            self.evidence.log_tool_output("reconnaissance", "altdns", "\n".join(permutations))
+            os.unlink(output_file)
+            self.logger.info(f"altdns generated {len(permutations)} permutations")
+            return permutations
+
+        os.unlink(output_file)
+        return []
+
+    async def _run_puredns(self, subdomains: list[str]) -> list[str]:
+        if not subdomains:
+            return []
+
+        import tempfile, os
+        self.logger.info(f"Running puredns resolve on {len(subdomains)} subdomains")
+
+        fd, input_file = tempfile.mkstemp(suffix="_puredns_in.txt")
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(subdomains))
+
+        cfg = self.config.get_tool_config("puredns")
+        resolvers = cfg.get("resolvers", self._get_data_file("resolvers.txt"))
+
+        result = self._cmd.run(
+            "puredns", ["resolve", input_file, "--resolvers", resolvers],
+            timeout=300,
+        )
+        if result.tool_missing:
+            if self._prompt_install_tool("puredns", self.TOOL_INSTALL_COMMANDS["puredns"]):
+                result = self._cmd.run(
+                    "puredns", ["resolve", input_file, "--resolvers", resolvers],
+                    timeout=300,
+                )
+            else:
+                os.unlink(input_file)
+                return []
+
+        os.unlink(input_file)
+
+        if result.returncode == 0:
+            self.evidence.log_tool_output("reconnaissance", "puredns", result.stdout)
+            resolved = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            self.logger.info(f"puredns resolved {len(resolved)} subdomains")
+            return resolved
+        return []
+
     async def _run_gau(self) -> list[str]:
         all_urls = []
         for domain in self._get_target_domains():
