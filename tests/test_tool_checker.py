@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import patch, mock_open, MagicMock
 from wstg_orchestrator.utils.tool_checker import (
     PlatformInfo, detect_platform, TOOL_REGISTRY, check_tools, format_summary_table,
+    ToolInstaller,
 )
 
 
@@ -176,3 +177,64 @@ class TestSummaryTable:
         output = format_summary_table(info, status)
         assert "2" in output
         assert "1" in output
+
+
+class TestToolInstaller:
+    def test_get_install_command_prefers_go(self):
+        """Go tools with go available should prefer go install."""
+        info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        installer = ToolInstaller(info)
+        with patch("shutil.which", return_value="/usr/bin/go"):
+            cmd, method = installer.get_install_command("subfinder")
+        assert method == "go"
+        assert "go install" in cmd
+
+    def test_get_install_command_falls_back_to_pkg_manager(self):
+        """Tools with no language installer should use system pkg manager."""
+        info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        installer = ToolInstaller(info)
+        cmd, method = installer.get_install_command("nmap")
+        assert method == "apt"
+        assert "nmap" in cmd
+
+    def test_get_install_command_prefers_pip(self):
+        """pip-based tools should use pip when available."""
+        info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        installer = ToolInstaller(info)
+        with patch("shutil.which", return_value="/usr/bin/pip3"):
+            cmd, method = installer.get_install_command("altdns")
+        assert method == "pip"
+
+    def test_get_install_command_brew_on_macos(self):
+        """macOS should use brew."""
+        info = PlatformInfo(os_type="macos", distro="macos", pkg_manager="brew")
+        installer = ToolInstaller(info)
+        cmd, method = installer.get_install_command("nmap")
+        assert method == "brew"
+
+    def test_get_install_command_returns_none_when_no_method(self):
+        """Tool with only apt/brew installs but wrong platform -> None."""
+        info = PlatformInfo(os_type="linux", distro="unknown", pkg_manager="")
+        installer = ToolInstaller(info)
+        with patch("shutil.which", return_value=None):
+            result = installer.get_install_command("whatweb")
+        assert result is None
+
+    @patch("subprocess.run")
+    def test_install_tool_success(self, mock_run):
+        mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        installer = ToolInstaller(info)
+        with patch("shutil.which", return_value="/usr/bin/go"):
+            result = installer.install_tool("subfinder")
+        assert result is True
+
+    @patch("subprocess.run")
+    def test_install_tool_fallback_when_go_missing(self, mock_run):
+        """When go is not available, should try apt fallback for subfinder."""
+        mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        installer = ToolInstaller(info)
+        with patch("shutil.which", return_value=None):
+            result = installer.install_tool("subfinder")
+        assert result is True

@@ -2,6 +2,8 @@ import logging
 import os
 import platform
 import shutil
+import subprocess
+import sys
 from dataclasses import dataclass
 
 logger = logging.getLogger("wstg.tool_checker")
@@ -258,6 +260,85 @@ def format_summary_table(platform_info: PlatformInfo, tool_status: dict[str, boo
     lines.append("=" * 64)
 
     return "\n".join(lines)
+
+
+_INSTALL_TIER_ORDER = ["go", "pip", "cargo", "apt", "dnf", "pacman", "brew"]
+
+_LANGUAGE_INSTALLERS = {"go", "pip", "cargo"}
+_SYSTEM_PKG_MANAGERS = {"apt", "dnf", "pacman", "brew"}
+
+
+class ToolInstaller:
+    """Installs tools using a tiered strategy: language installers first, then system pkg managers."""
+
+    def __init__(self, platform_info: PlatformInfo):
+        self.platform = platform_info
+
+    def get_install_command(self, tool_name: str) -> tuple[str, str] | None:
+        """Return (command_string, method) for the best available install method, or None."""
+        if tool_name not in TOOL_REGISTRY:
+            return None
+        install_info = TOOL_REGISTRY[tool_name]["install"]
+
+        for tier in _INSTALL_TIER_ORDER:
+            if tier not in install_info:
+                continue
+
+            if tier in _LANGUAGE_INSTALLERS:
+                # Check if the runtime is available
+                if tier == "pip":
+                    runtime_available = shutil.which("pip3") or shutil.which("pip")
+                else:
+                    runtime_available = shutil.which(tier)
+                if not runtime_available:
+                    continue
+
+                # Build the command
+                package = install_info[tier]
+                if tier == "go":
+                    cmd = package  # Already a full go install command
+                elif tier == "pip":
+                    cmd = f"pip3 install --user {package}"
+                elif tier == "cargo":
+                    cmd = f"cargo install {package}"
+                return (cmd, tier)
+
+            if tier in _SYSTEM_PKG_MANAGERS:
+                if self.platform.pkg_manager != tier:
+                    continue
+                package = install_info[tier]
+                if tier == "apt":
+                    cmd = f"sudo apt install -y {package}"
+                elif tier == "dnf":
+                    cmd = f"sudo dnf install -y {package}"
+                elif tier == "pacman":
+                    cmd = f"sudo pacman -S --noconfirm {package}"
+                elif tier == "brew":
+                    cmd = f"brew install {package}"
+                return (cmd, tier)
+
+        return None
+
+    def install_tool(self, tool_name: str) -> bool:
+        """Run the install command for a tool. Returns True on success."""
+        result = self.get_install_command(tool_name)
+        if result is None:
+            logger.warning("No install method found for %s", tool_name)
+            return False
+        cmd, method = result
+        logger.info("Installing %s via %s: %s", tool_name, method, cmd)
+        try:
+            proc = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=300,
+            )
+            if proc.returncode == 0:
+                logger.info("Successfully installed %s", tool_name)
+                return True
+            logger.error("Failed to install %s: %s", tool_name, proc.stderr)
+            return False
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.error("Install command failed for %s: %s", tool_name, e)
+            return False
 
 
 def _detect_wsl() -> bool:
