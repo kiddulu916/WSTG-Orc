@@ -386,6 +386,42 @@ def handle_windows_wsl(platform_info: PlatformInfo) -> str | None:
     return "relaunch"
 
 
+def _select_tools(tools: list[str]) -> list[str]:
+    """Interactive tool selection: show numbered list and let user pick."""
+    print("\n  Available tools to install:")
+    for i, tool in enumerate(tools, 1):
+        print(f"    [{i}] {tool}")
+    print()
+    raw = input("  Enter numbers separated by commas (e.g. 1,3,5): ").strip()
+    selected = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            idx = int(part) - 1
+            if 0 <= idx < len(tools):
+                selected.append(tools[idx])
+    return selected
+
+
+def prompt_install_missing(missing_tools: list[str]) -> list[str]:
+    """Prompt user about missing tools. Returns list of tools to install."""
+    if not missing_tools:
+        return []
+
+    print(f"\n  {len(missing_tools)} tool(s) missing: {', '.join(missing_tools)}")
+    print("  [1] Install all")
+    print("  [2] Select which to install")
+    print("  [3] Skip")
+    choice = input("  Choice [1/2/3]: ").strip()
+
+    if choice == "1":
+        return list(missing_tools)
+    elif choice == "2":
+        return _select_tools(missing_tools)
+    else:
+        return []
+
+
 def _detect_wsl() -> bool:
     try:
         if os.path.exists("/proc/version"):

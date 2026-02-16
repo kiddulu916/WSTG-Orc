@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import patch, mock_open, MagicMock
 from wstg_orchestrator.utils.tool_checker import (
     PlatformInfo, detect_platform, TOOL_REGISTRY, check_tools, format_summary_table,
-    ToolInstaller, handle_windows_wsl,
+    ToolInstaller, handle_windows_wsl, prompt_install_missing,
 )
 
 
@@ -280,3 +280,19 @@ class TestWindowsWSL:
         info = PlatformInfo(os_type="windows", distro="windows", pkg_manager="")
         result = handle_windows_wsl(info)
         assert result == "relaunch"
+
+
+class TestPromptInstallMissing:
+    @patch("builtins.input", return_value="3")
+    def test_skip_returns_empty(self, mock_input):
+        result = prompt_install_missing(["nmap", "sqlmap"])
+        assert result == []
+
+    @patch("builtins.input", return_value="1")
+    def test_install_all_returns_all(self, mock_input):
+        result = prompt_install_missing(["nmap", "sqlmap"])
+        assert result == ["nmap", "sqlmap"]
+
+    def test_no_missing_returns_empty(self):
+        result = prompt_install_missing([])
+        assert result == []
