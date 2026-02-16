@@ -341,6 +341,51 @@ class ToolInstaller:
             return False
 
 
+def _exit_no_wsl():
+    """Print WSL install instructions and exit."""
+    print("\n  WSL2 with Kali Linux is required to run WSTG-Orc on Windows.")
+    print("  Install WSL2: https://learn.microsoft.com/en-us/windows/wsl/install")
+    print("  Then install Kali: wsl --install -d kali-linux\n")
+    sys.exit(1)
+
+
+def handle_windows_wsl(platform_info: PlatformInfo) -> str | None:
+    """Handle Windows WSL detection and setup. Returns 'relaunch' if ready, None if not Windows."""
+    if platform_info.os_type != "windows":
+        return None
+
+    # Check WSL2 availability
+    try:
+        result = subprocess.run(
+            ["wsl", "--status"], capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            _exit_no_wsl()
+    except (FileNotFoundError, OSError):
+        _exit_no_wsl()
+
+    # Check for kali-linux distro
+    result = subprocess.run(
+        ["wsl", "-l", "-q"], capture_output=True, text=True, timeout=30,
+    )
+    distros = result.stdout.strip().split("\n")
+    distros = [d.strip() for d in distros if d.strip()]
+
+    if "kali-linux" in distros:
+        return "relaunch"
+
+    # Offer to install kali-linux
+    answer = input("  Kali Linux not found in WSL. Install it? [y/N] ").strip().lower()
+    if answer != "y":
+        _exit_no_wsl()
+
+    print("  Installing Kali Linux via WSL...")
+    subprocess.run(
+        ["wsl", "--install", "-d", "kali-linux"], capture_output=True, text=True, timeout=600,
+    )
+    return "relaunch"
+
+
 def _detect_wsl() -> bool:
     try:
         if os.path.exists("/proc/version"):

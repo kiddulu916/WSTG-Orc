@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import patch, mock_open, MagicMock
 from wstg_orchestrator.utils.tool_checker import (
     PlatformInfo, detect_platform, TOOL_REGISTRY, check_tools, format_summary_table,
-    ToolInstaller,
+    ToolInstaller, handle_windows_wsl,
 )
 
 
@@ -238,3 +238,45 @@ class TestToolInstaller:
         with patch("shutil.which", return_value=None):
             result = installer.install_tool("subfinder")
         assert result is True
+
+
+class TestWindowsWSL:
+    def test_noop_on_linux(self):
+        info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        result = handle_windows_wsl(info)
+        assert result is None
+
+    @patch("subprocess.run", side_effect=FileNotFoundError("wsl not found"))
+    def test_exits_when_no_wsl(self, mock_run):
+        info = PlatformInfo(os_type="windows", distro="windows", pkg_manager="")
+        with pytest.raises(SystemExit):
+            handle_windows_wsl(info)
+
+    @patch("subprocess.run")
+    def test_detects_wsl_with_kali(self, mock_run):
+        def run_side_effect(cmd, **kwargs):
+            if "--status" in cmd:
+                return type("R", (), {"returncode": 0, "stdout": "Default Version: 2", "stderr": ""})()
+            if "-l" in cmd:
+                return type("R", (), {"returncode": 0, "stdout": "kali-linux\nUbuntu\n", "stderr": ""})()
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        mock_run.side_effect = run_side_effect
+        info = PlatformInfo(os_type="windows", distro="windows", pkg_manager="")
+        result = handle_windows_wsl(info)
+        assert result == "relaunch"
+
+    @patch("builtins.input", return_value="y")
+    @patch("subprocess.run")
+    def test_offers_kali_install_when_no_distro(self, mock_run, mock_input):
+        def run_side_effect(cmd, **kwargs):
+            if "--status" in cmd:
+                return type("R", (), {"returncode": 0, "stdout": "Default Version: 2", "stderr": ""})()
+            if "-l" in cmd:
+                return type("R", (), {"returncode": 0, "stdout": "\n", "stderr": ""})()
+            if "--install" in cmd:
+                return type("R", (), {"returncode": 0, "stdout": "Installing...", "stderr": ""})()
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        mock_run.side_effect = run_side_effect
+        info = PlatformInfo(os_type="windows", distro="windows", pkg_manager="")
+        result = handle_windows_wsl(info)
+        assert result == "relaunch"
