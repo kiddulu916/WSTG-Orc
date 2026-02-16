@@ -25,6 +25,9 @@ class ReconModule(BaseModule):
         r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}'  # IPv4
         r'|[0-9a-fA-F:]+/\d{1,3})'                        # IPv6
     )
+    _WIKI_LINK_RE = re.compile(
+        r'\[https?://([^\s/\]]+)(?:/[^\s\]]*)?\s+([^\]]+)\]'
+    )
     TOOL_INSTALL_COMMANDS = {
         "amass": "go install -v github.com/owasp-amass/amass/v4/...@master",
         "whois": "apt install whois",
@@ -453,6 +456,94 @@ class ReconModule(BaseModule):
         self.evidence.log_parsed("reconnaissance", "parameters", all_params)
         self.evidence.log_parsed("reconnaissance", "idor_candidates", idor_candidates)
         self.logger.info(f"Found {len(all_params)} parameters, {len(idor_candidates)} IDOR candidates")
+
+    def _parse_wikipedia_acquisitions(self, wikitext: str) -> list[dict]:
+        """Parse wikitext for acquisition entries, returning list of dicts with company/domain/year/source."""
+        # Search for an acquisitions-related heading
+        heading_re = re.compile(
+            r'^(={2,})\s*'
+            r'(?:list\s+of\s+)?'
+            r'(?:mergers\s+and\s+)?'
+            r'acquisitions'
+            r'\s*\1\s*$',
+            re.IGNORECASE | re.MULTILINE,
+        )
+        match = heading_re.search(wikitext)
+        if not match:
+            return []
+
+        # Extract content from the heading to the next same-level heading
+        level = match.group(1)
+        start = match.end()
+        next_heading = re.compile(
+            r'^' + re.escape(level) + r'\s+[^=]',
+            re.MULTILINE,
+        )
+        next_match = next_heading.search(wikitext, start)
+        section = wikitext[start:next_match.start()] if next_match else wikitext[start:]
+
+        year_re = re.compile(r'((?:19|20)\d{2})')
+        seen_domains = set()
+        results = []
+
+        for link_match in self._WIKI_LINK_RE.finditer(section):
+            domain = link_match.group(1).lower()
+            company = link_match.group(2)
+            if domain in seen_domains:
+                continue
+            seen_domains.add(domain)
+
+            # Look for a year near the link (within the same line or nearby context)
+            context_start = max(0, link_match.start() - 100)
+            context_end = min(len(section), link_match.end() + 100)
+            context = section[context_start:context_end]
+            year_match = year_re.search(context)
+            year = year_match.group(1) if year_match else ""
+
+            results.append({
+                "company": company,
+                "domain": domain,
+                "year": year,
+                "source": "wikipedia",
+            })
+
+        return results
+
+    async def _fetch_wikipedia_acquisitions(self, company_name: str) -> list[dict]:
+        """Fetch and parse Wikipedia acquisition data for a company."""
+        import aiohttp
+
+        pages = [company_name, f"List of mergers and acquisitions by {company_name}"]
+        api_url = "https://en.wikipedia.org/w/api.php"
+
+        for page in pages:
+            try:
+                timeout = aiohttp.ClientTimeout(total=30)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    params = {
+                        "action": "parse",
+                        "page": page,
+                        "prop": "wikitext",
+                        "format": "json",
+                    }
+                    resp = await session.get(api_url, params=params)
+                    data = await resp.json()
+
+                if "error" in data:
+                    self.logger.debug(f"Wikipedia page not found: {page}")
+                    continue
+
+                wikitext = data["parse"]["wikitext"]["*"]
+                self.evidence.log_tool_output("reconnaissance", f"wikipedia_{page}", wikitext)
+
+                results = self._parse_wikipedia_acquisitions(wikitext)
+                if results:
+                    return results
+
+            except Exception as e:
+                self.logger.warning(f"Wikipedia fetch failed for page '{page}': {e}")
+
+        return []
 
     def _filter_in_scope(self, items: list[str]) -> list[str]:
         return [item for item in items if self.scope.is_in_scope(item)]

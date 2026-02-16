@@ -458,3 +458,158 @@ async def test_lookup_asn_ip_ranges_ipv6(recon_module):
         ranges = await recon_module._lookup_asn_ip_ranges(["AS1"])
     assert "2001:db8::/32" in ranges
     assert "10.0.0.0/16" in ranges
+
+
+def test_parse_wikipedia_acquisitions_extracts_table_rows(recon_module):
+    """Parses wiki table rows containing company name, domain, and year."""
+    wikitext = (
+        "== Acquisitions ==\n"
+        "{| class=\"wikitable\"\n"
+        "|-\n"
+        "! Company !! Date !! Notes\n"
+        "|-\n"
+        "| [https://instagram.com Instagram] || October 2012 || Photo sharing\n"
+        "|-\n"
+        "| [https://whatsapp.com WhatsApp] || February 2014 || Messaging\n"
+        "|-\n"
+        "| Onavo || 2013 || VPN app\n"
+        "|}\n"
+    )
+    results = recon_module._parse_wikipedia_acquisitions(wikitext)
+    domains = [r["domain"] for r in results]
+    companies = [r["company"] for r in results]
+    assert "instagram.com" in domains
+    assert "whatsapp.com" in domains
+    assert "Instagram" in companies
+    assert "WhatsApp" in companies
+    # Onavo has no URL in the wikitext, so no domain extracted
+    assert all(d != "" for d in domains)
+
+
+def test_parse_wikipedia_acquisitions_no_section(recon_module):
+    """Returns empty list when no acquisitions section exists."""
+    wikitext = "== History ==\nFounded in 2004.\n== Products ==\nSome products.\n"
+    results = recon_module._parse_wikipedia_acquisitions(wikitext)
+    assert results == []
+
+
+def test_parse_wikipedia_acquisitions_empty_table(recon_module):
+    """Returns empty list when acquisitions section has no table rows with URLs."""
+    wikitext = (
+        "== Acquisitions ==\n"
+        "The company has made several acquisitions.\n"
+    )
+    results = recon_module._parse_wikipedia_acquisitions(wikitext)
+    assert results == []
+
+
+def test_parse_wikipedia_acquisitions_list_page_format(recon_module):
+    """Handles 'List of mergers and acquisitions by X' page format with external links."""
+    wikitext = (
+        "== List of acquisitions ==\n"
+        "{| class=\"wikitable\"\n"
+        "|-\n"
+        "| [https://youtube.com YouTube] || October 2006 || $1.65B\n"
+        "|}\n"
+    )
+    results = recon_module._parse_wikipedia_acquisitions(wikitext)
+    assert len(results) >= 1
+    assert results[0]["domain"] == "youtube.com"
+    assert results[0]["company"] == "YouTube"
+
+
+@pytest.mark.asyncio
+async def test_fetch_wikipedia_acquisitions_success(recon_module):
+    """Successful Wikipedia API call returns parsed acquisitions."""
+    mock_response_data = {
+        "parse": {
+            "wikitext": {
+                "*": (
+                    "== Acquisitions ==\n"
+                    "{| class=\"wikitable\"\n"
+                    "|-\n"
+                    "| [https://instagram.com Instagram] || 2012 || Photo sharing\n"
+                    "|}\n"
+                )
+            }
+        }
+    }
+    with patch("aiohttp.ClientSession") as mock_session_cls:
+        mock_session = AsyncMock()
+        mock_session_cls.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=mock_response_data)
+        mock_session.get = AsyncMock(return_value=mock_resp)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        results = await recon_module._fetch_wikipedia_acquisitions("Meta")
+    assert len(results) >= 1
+    assert results[0]["source"] == "wikipedia"
+
+
+@pytest.mark.asyncio
+async def test_fetch_wikipedia_acquisitions_no_page(recon_module):
+    """Returns empty list when Wikipedia page doesn't exist."""
+    mock_response_data = {"error": {"code": "missingtitle"}}
+    with patch("aiohttp.ClientSession") as mock_session_cls:
+        mock_session = AsyncMock()
+        mock_session_cls.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=mock_response_data)
+        mock_session.get = AsyncMock(return_value=mock_resp)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        results = await recon_module._fetch_wikipedia_acquisitions("NonexistentCorp12345")
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_wikipedia_acquisitions_tries_list_page(recon_module):
+    """Falls back to 'List of mergers and acquisitions by X' page."""
+    no_acq_response = {
+        "parse": {"wikitext": {"*": "== History ==\nFounded in 2004.\n"}}
+    }
+    list_response = {
+        "parse": {
+            "wikitext": {
+                "*": (
+                    "== Acquisitions ==\n"
+                    "{| class=\"wikitable\"\n"
+                    "|-\n"
+                    "| [https://youtube.com YouTube] || 2006 || $1.65B\n"
+                    "|}\n"
+                )
+            }
+        }
+    }
+
+    call_count = 0
+
+    async def mock_get(url, **kwargs):
+        nonlocal call_count
+        resp = AsyncMock()
+        resp.status = 200
+        if call_count == 0:
+            resp.json = AsyncMock(return_value=no_acq_response)
+        else:
+            resp.json = AsyncMock(return_value=list_response)
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+        call_count += 1
+        return resp
+
+    with patch("aiohttp.ClientSession") as mock_session_cls:
+        mock_session = AsyncMock()
+        mock_session_cls.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_session.get = mock_get
+
+        results = await recon_module._fetch_wikipedia_acquisitions("Alphabet")
+    assert len(results) >= 1
+    assert results[0]["domain"] == "youtube.com"
