@@ -372,6 +372,27 @@ class ReconModule(BaseModule):
             return [line.strip() for line in result.stdout.splitlines() if line.strip()]
         return []
 
+    async def _run_crtsh(self, domain: str) -> list[str]:
+        self.logger.info(f"Running crt.sh lookup for domain: {domain}")
+        # Check curl and jq availability
+        for tool in ("curl", "jq"):
+            if not self._cmd.is_tool_available(tool):
+                if not self._prompt_install_tool(tool, self.TOOL_INSTALL_COMMANDS[tool]):
+                    return []
+
+        command = f"curl -s 'https://crt.sh/?q=%25.{domain}&output=json' | jq -r '.[].name_value'"
+        result = self._cmd.run_pipeline("crt.sh", command, timeout=120)
+        if result.returncode == 0:
+            self.evidence.log_tool_output("reconnaissance", "crtsh", result.stdout)
+            subs = []
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line and not line.startswith("*"):
+                    subs.append(line)
+            return subs
+        self.logger.warning(f"crt.sh lookup failed for {domain}")
+        return []
+
     async def _run_gau(self) -> list[str]:
         all_urls = []
         for domain in self._get_target_domains():

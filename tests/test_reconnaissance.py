@@ -889,3 +889,35 @@ async def test_run_assetfinder_missing_declined(recon_module):
         with patch.object(recon_module, '_prompt_install_tool', return_value=False):
             results = await recon_module._run_assetfinder("example.com")
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_run_crtsh_success(recon_module):
+    mock_result = MagicMock(returncode=0,
+                            stdout="sub1.example.com\n*.example.com\nsub2.example.com\n",
+                            timed_out=False)
+    with patch.object(recon_module._cmd, 'is_tool_available', return_value=True):
+        with patch.object(recon_module._cmd, 'run_pipeline', return_value=mock_result):
+            results = await recon_module._run_crtsh("example.com")
+    # Wildcards should be stripped
+    assert "sub1.example.com" in results
+    assert "sub2.example.com" in results
+    assert "*.example.com" not in results
+
+
+@pytest.mark.asyncio
+async def test_run_crtsh_curl_missing(recon_module):
+    """When curl is missing, prompts install. If declined, returns empty."""
+    with patch.object(recon_module._cmd, 'is_tool_available', return_value=False):
+        with patch.object(recon_module, '_prompt_install_tool', return_value=False):
+            results = await recon_module._run_crtsh("example.com")
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_run_crtsh_failure(recon_module):
+    mock_result = MagicMock(returncode=1, stdout="", timed_out=False)
+    with patch.object(recon_module._cmd, 'is_tool_available', return_value=True):
+        with patch.object(recon_module._cmd, 'run_pipeline', return_value=mock_result):
+            results = await recon_module._run_crtsh("example.com")
+    assert results == []
