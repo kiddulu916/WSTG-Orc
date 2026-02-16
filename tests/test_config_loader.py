@@ -238,3 +238,48 @@ def test_append_in_scope_urls_empty_list(config_file):
     before = list(config.in_scope_urls)
     config.append_in_scope_urls([])
     assert config.in_scope_urls == before
+
+
+# --- update_tool_config tests ---
+
+
+@pytest.fixture
+def minimal_config_file(tmp_path):
+    config = {
+        "program_scope": {"base_domain": "example.com"},
+        "tool_configs": {"subfinder": {"extra_args": ["-all"]}},
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.dump(config))
+    return str(path)
+
+
+def test_update_tool_config_adds_new_key(minimal_config_file):
+    loader = ConfigLoader(minimal_config_file)
+    loader.update_tool_config("github_subdomains", "token", "ghp_abc123")
+
+    # Verify in-memory
+    assert loader.get_tool_config("github_subdomains")["token"] == "ghp_abc123"
+
+    # Verify on disk
+    with open(minimal_config_file) as f:
+        raw = yaml.safe_load(f)
+    assert raw["tool_configs"]["github_subdomains"]["token"] == "ghp_abc123"
+
+
+def test_update_tool_config_preserves_existing(minimal_config_file):
+    loader = ConfigLoader(minimal_config_file)
+    loader.update_tool_config("github_subdomains", "token", "ghp_abc123")
+
+    # subfinder config should still be there
+    assert loader.get_tool_config("subfinder")["extra_args"] == ["-all"]
+
+
+def test_update_tool_config_creates_tool_configs_section(tmp_path):
+    config = {"program_scope": {"base_domain": "example.com"}}
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.dump(config))
+
+    loader = ConfigLoader(str(path))
+    loader.update_tool_config("gitlab_subdomains", "token", "glpat_xyz")
+    assert loader.get_tool_config("gitlab_subdomains")["token"] == "glpat_xyz"

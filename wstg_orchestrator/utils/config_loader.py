@@ -85,6 +85,14 @@ class ConfigLoader:
     def get_tool_config(self, tool_name: str) -> dict:
         return self._tools.get(tool_name, {})
 
+    def update_tool_config(self, tool_name: str, key: str, value):
+        """Update a single key in a tool's config, persisting to YAML on disk."""
+        if tool_name not in self._tools:
+            self._tools[tool_name] = {}
+        self._tools[tool_name][key] = value
+        self._raw.setdefault("tool_configs", {})[tool_name] = self._tools[tool_name]
+        self.save(self.config_path)
+
     def get_auth_profile(self, profile_name: str) -> dict | None:
         return self._auth.get(profile_name)
 
