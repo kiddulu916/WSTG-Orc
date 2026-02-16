@@ -19,7 +19,7 @@ from wstg_orchestrator.utils.parser_utils import (
 
 class ReconModule(BaseModule):
     PHASE_NAME = "reconnaissance"
-    SUBCATEGORIES = ["asn_enumeration", "passive_osint", "url_harvesting", "live_host_validation", "parameter_harvesting"]
+    SUBCATEGORIES = ["asn_enumeration", "acquisition_discovery", "passive_osint", "url_harvesting", "live_host_validation", "parameter_harvesting"]
     EVIDENCE_SUBDIRS = ["tool_output", "parsed", "evidence", "screenshots"]
     _CIDR_RE = re.compile(
         r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}'  # IPv4
@@ -46,6 +46,10 @@ class ReconModule(BaseModule):
         if not self.should_skip_subcategory("asn_enumeration"):
             await self._asn_enumeration()
             self.mark_subcategory_complete("asn_enumeration")
+
+        if not self.should_skip_subcategory("acquisition_discovery"):
+            await self._acquisition_discovery()
+            self.mark_subcategory_complete("acquisition_discovery")
 
         if not self.should_skip_subcategory("passive_osint"):
             await self._passive_osint()
@@ -649,6 +653,54 @@ class ReconModule(BaseModule):
             except Exception:
                 pass
             return []
+
+    async def _acquisition_discovery(self):
+        """Discover companies acquired by the target and add their domains to scope."""
+        company_name = self.config.company_name
+        if not company_name:
+            self.logger.warning("No company_name configured, skipping acquisition discovery")
+            return
+
+        self.logger.info(f"Starting acquisition discovery for: {company_name}")
+
+        # Try Wikipedia first (lightweight, no browser needed)
+        acquisitions = await self._fetch_wikipedia_acquisitions(company_name)
+
+        # Fall back to Crunchbase via Playwright if Wikipedia yielded nothing
+        if not acquisitions:
+            self.logger.info("Wikipedia returned no acquisitions, trying Crunchbase")
+            acquisitions = await self._fetch_crunchbase_acquisitions(company_name)
+
+        if not acquisitions:
+            self.logger.info("No acquisitions found from any source")
+            return
+
+        # Extract domains
+        domains = [a["domain"] for a in acquisitions if a.get("domain")]
+        domains = list(dict.fromkeys(domains))  # deduplicate, preserve order
+
+        # Enrich state
+        self.state.enrich("acquired_companies", acquisitions)
+        self.state.enrich("discovered_subdomains", domains)
+        self.evidence.log_parsed("reconnaissance", "acquired_companies", acquisitions)
+
+        self.logger.info(
+            f"Found {len(acquisitions)} acquisitions with {len(domains)} domains"
+        )
+
+        # Expand scope if enabled
+        auto_expand = getattr(self.config, "auto_expand_scope", True)
+        if auto_expand and domains:
+            self.scope.add_in_scope_hostnames(domains)
+            self.config.append_in_scope_urls(domains)
+            self.logger.info(
+                f"[SCOPE EXPANSION] Added {len(domains)} acquisition domains to scope:\n"
+                + "\n".join(f"  + {d}" for d in domains)
+            )
+        elif domains:
+            self.logger.info(
+                f"auto_expand_scope disabled — {len(domains)} acquisition domains logged but not added to scope"
+            )
 
     def _filter_in_scope(self, items: list[str]) -> list[str]:
         return [item for item in items if self.scope.is_in_scope(item)]

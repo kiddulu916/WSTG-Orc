@@ -85,6 +85,9 @@ async def test_execute_runs_url_harvesting_before_live_hosts(recon_module):
     async def mock_asn():
         call_order.append("asn_enumeration")
 
+    async def mock_acq():
+        call_order.append("acquisition_discovery")
+
     async def mock_passive():
         call_order.append("passive_osint")
 
@@ -98,11 +101,12 @@ async def test_execute_runs_url_harvesting_before_live_hosts(recon_module):
         call_order.append("parameter_harvesting")
 
     with patch.object(recon_module, '_asn_enumeration', side_effect=mock_asn):
-        with patch.object(recon_module, '_passive_osint', side_effect=mock_passive):
-            with patch.object(recon_module, '_url_harvesting', side_effect=mock_harvest):
-                with patch.object(recon_module, '_live_host_validation', side_effect=mock_live):
-                    with patch.object(recon_module, '_parameter_harvesting', side_effect=mock_params):
-                        await recon_module.execute()
+        with patch.object(recon_module, '_acquisition_discovery', side_effect=mock_acq):
+            with patch.object(recon_module, '_passive_osint', side_effect=mock_passive):
+                with patch.object(recon_module, '_url_harvesting', side_effect=mock_harvest):
+                    with patch.object(recon_module, '_live_host_validation', side_effect=mock_live):
+                        with patch.object(recon_module, '_parameter_harvesting', side_effect=mock_params):
+                            await recon_module.execute()
 
     assert call_order.index("url_harvesting") < call_order.index("live_host_validation")
 
@@ -397,6 +401,9 @@ async def test_execute_runs_asn_enumeration_first(recon_module):
     async def mock_asn():
         call_order.append("asn_enumeration")
 
+    async def mock_acq():
+        call_order.append("acquisition_discovery")
+
     async def mock_passive():
         call_order.append("passive_osint")
 
@@ -410,14 +417,16 @@ async def test_execute_runs_asn_enumeration_first(recon_module):
         call_order.append("parameter_harvesting")
 
     with patch.object(recon_module, '_asn_enumeration', side_effect=mock_asn):
-        with patch.object(recon_module, '_passive_osint', side_effect=mock_passive):
-            with patch.object(recon_module, '_url_harvesting', side_effect=mock_harvest):
-                with patch.object(recon_module, '_live_host_validation', side_effect=mock_live):
-                    with patch.object(recon_module, '_parameter_harvesting', side_effect=mock_params):
-                        await recon_module.execute()
+        with patch.object(recon_module, '_acquisition_discovery', side_effect=mock_acq):
+            with patch.object(recon_module, '_passive_osint', side_effect=mock_passive):
+                with patch.object(recon_module, '_url_harvesting', side_effect=mock_harvest):
+                    with patch.object(recon_module, '_live_host_validation', side_effect=mock_live):
+                        with patch.object(recon_module, '_parameter_harvesting', side_effect=mock_params):
+                            await recon_module.execute()
 
     assert call_order[0] == "asn_enumeration"
-    assert call_order[1] == "passive_osint"
+    assert call_order[1] == "acquisition_discovery"
+    assert call_order[2] == "passive_osint"
 
 
 @pytest.mark.asyncio
@@ -684,3 +693,125 @@ async def test_fetch_crunchbase_acquisitions_no_results(recon_module):
         results = await recon_module._fetch_crunchbase_acquisitions("TinyStartup")
 
     assert results == []
+
+
+def test_subcategories_includes_acquisition_discovery(recon_module):
+    """acquisition_discovery is the second subcategory (after asn_enumeration)."""
+    assert "acquisition_discovery" in recon_module.SUBCATEGORIES
+    assert recon_module.SUBCATEGORIES.index("acquisition_discovery") == 1
+    assert recon_module.SUBCATEGORIES.index("acquisition_discovery") < recon_module.SUBCATEGORIES.index("passive_osint")
+
+
+@pytest.mark.asyncio
+async def test_acquisition_discovery_enriches_state(recon_module):
+    """Full flow: Wikipedia returns acquisitions, state and scope are updated."""
+    recon_module.config.company_name = "Meta"
+    recon_module.config.auto_expand_scope = True
+    recon_module.config.config_path = "/tmp/test_config.yaml"
+
+    wiki_results = [
+        {"company": "Instagram", "domain": "instagram.com", "year": "2012", "source": "wikipedia"},
+        {"company": "WhatsApp", "domain": "whatsapp.com", "year": "2014", "source": "wikipedia"},
+    ]
+    with patch.object(recon_module, '_fetch_wikipedia_acquisitions', new_callable=AsyncMock, return_value=wiki_results):
+        await recon_module._acquisition_discovery()
+
+    enrich_calls = {}
+    for call in recon_module.state.enrich.call_args_list:
+        key = call.args[0]
+        enrich_calls.setdefault(key, []).extend(call.args[1])
+
+    assert "instagram.com" in enrich_calls.get("discovered_subdomains", [])
+    assert "whatsapp.com" in enrich_calls.get("discovered_subdomains", [])
+    assert any(a["company"] == "Instagram" for a in enrich_calls.get("acquired_companies", []))
+
+    recon_module.scope.add_in_scope_hostnames.assert_called_once_with(["instagram.com", "whatsapp.com"])
+    recon_module.config.append_in_scope_urls.assert_called_once_with(["instagram.com", "whatsapp.com"])
+
+
+@pytest.mark.asyncio
+async def test_acquisition_discovery_falls_back_to_crunchbase(recon_module):
+    """When Wikipedia returns nothing, Crunchbase fallback is tried."""
+    recon_module.config.company_name = "SmallCorp"
+    recon_module.config.auto_expand_scope = True
+    recon_module.config.config_path = "/tmp/test_config.yaml"
+
+    cb_results = [
+        {"company": "AcquiredCo", "domain": "acquiredco.com", "year": "2023", "source": "crunchbase"},
+    ]
+    with patch.object(recon_module, '_fetch_wikipedia_acquisitions', new_callable=AsyncMock, return_value=[]):
+        with patch.object(recon_module, '_fetch_crunchbase_acquisitions', new_callable=AsyncMock, return_value=cb_results):
+            await recon_module._acquisition_discovery()
+
+    enrich_calls = {}
+    for call in recon_module.state.enrich.call_args_list:
+        key = call.args[0]
+        enrich_calls.setdefault(key, []).extend(call.args[1])
+    assert "acquiredco.com" in enrich_calls.get("discovered_subdomains", [])
+
+
+@pytest.mark.asyncio
+async def test_acquisition_discovery_skips_without_company_name(recon_module):
+    """Skips when company_name is empty."""
+    recon_module.config.company_name = ""
+    await recon_module._acquisition_discovery()
+    assert recon_module.state.enrich.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_acquisition_discovery_respects_auto_expand_false(recon_module):
+    """When auto_expand_scope is False, domains go to state but not scope."""
+    recon_module.config.company_name = "Meta"
+    recon_module.config.auto_expand_scope = False
+    recon_module.config.config_path = "/tmp/test_config.yaml"
+
+    wiki_results = [
+        {"company": "Instagram", "domain": "instagram.com", "year": "2012", "source": "wikipedia"},
+    ]
+    with patch.object(recon_module, '_fetch_wikipedia_acquisitions', new_callable=AsyncMock, return_value=wiki_results):
+        await recon_module._acquisition_discovery()
+
+    enrich_calls = {}
+    for call in recon_module.state.enrich.call_args_list:
+        key = call.args[0]
+        enrich_calls.setdefault(key, []).extend(call.args[1])
+    assert "instagram.com" in enrich_calls.get("discovered_subdomains", [])
+
+    recon_module.scope.add_in_scope_hostnames.assert_not_called()
+    recon_module.config.append_in_scope_urls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_execute_runs_acquisition_discovery_after_asn(recon_module):
+    """acquisition_discovery runs after asn_enumeration, before passive_osint."""
+    call_order = []
+
+    async def mock_asn():
+        call_order.append("asn_enumeration")
+
+    async def mock_acq():
+        call_order.append("acquisition_discovery")
+
+    async def mock_passive():
+        call_order.append("passive_osint")
+
+    async def mock_harvest():
+        call_order.append("url_harvesting")
+
+    async def mock_live():
+        call_order.append("live_host_validation")
+
+    async def mock_params():
+        call_order.append("parameter_harvesting")
+
+    with patch.object(recon_module, '_asn_enumeration', side_effect=mock_asn):
+        with patch.object(recon_module, '_acquisition_discovery', side_effect=mock_acq):
+            with patch.object(recon_module, '_passive_osint', side_effect=mock_passive):
+                with patch.object(recon_module, '_url_harvesting', side_effect=mock_harvest):
+                    with patch.object(recon_module, '_live_host_validation', side_effect=mock_live):
+                        with patch.object(recon_module, '_parameter_harvesting', side_effect=mock_params):
+                            await recon_module.execute()
+
+    assert call_order[0] == "asn_enumeration"
+    assert call_order[1] == "acquisition_discovery"
+    assert call_order[2] == "passive_osint"
