@@ -71,6 +71,10 @@ class ConfigLoader:
         return self._scope.get("notes", "")
 
     @property
+    def auto_expand_scope(self) -> bool:
+        return self._scope.get("auto_expand_scope", True)
+
+    @property
     def callback_host(self) -> str:
         return self._callback.get("host", "0.0.0.0")
 

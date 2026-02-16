@@ -172,6 +172,31 @@ def test_scope_checker_uses_wildcard_and_in_scope():
         os.remove(path)
 
 
+def test_auto_expand_scope_defaults_true(config_file):
+    """auto_expand_scope defaults to True when not set in config."""
+    config = ConfigLoader(config_file)
+    assert config.auto_expand_scope is True
+
+
+def test_auto_expand_scope_reads_from_config():
+    """auto_expand_scope reads from program_scope when explicitly set."""
+    cfg = {
+        "program_scope": {
+            "base_domain": "test.com",
+            "auto_expand_scope": False,
+        },
+    }
+    fd, path = tempfile.mkstemp(suffix=".yaml")
+    os.close(fd)
+    with open(path, "w") as f:
+        yaml.dump(cfg, f)
+    try:
+        config = ConfigLoader(path)
+        assert config.auto_expand_scope is False
+    finally:
+        os.remove(path)
+
+
 def test_config_path_stored(config_file):
     """ConfigLoader stores the config file path."""
     config = ConfigLoader(config_file)

@@ -118,6 +118,12 @@ def test_asns_and_ip_ranges_initialized(tmp_state_file):
     assert sm.get("ip_ranges") == []
 
 
+def test_acquired_companies_state_key(tmp_state_file):
+    """acquired_companies is a valid state key initialized as empty list."""
+    sm = StateManager(tmp_state_file, "example.com", "TestCorp")
+    assert sm.get("acquired_companies") == []
+
+
 def test_enrich_filters_dict_values_by_url_key(tmp_state_file):
     scope = ScopeChecker(
         base_domain="example.com",
