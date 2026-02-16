@@ -105,6 +105,26 @@ class TestToolRegistry:
         assert "kiterunner" in TOOL_REGISTRY
         assert "api_testing" in TOOL_REGISTRY["kiterunner"]["required_by"]
 
+    def test_kiterunner_check_cmd_is_kiterunner(self):
+        """kiterunner binary from go install is named 'kiterunner', not 'kr'."""
+        assert TOOL_REGISTRY["kiterunner"]["check_cmd"] == "kiterunner"
+
+    def test_kiterunner_go_path_uses_cmd_kiterunner(self):
+        """go install path must use cmd/kiterunner, not cmd/kr."""
+        go_cmd = TOOL_REGISTRY["kiterunner"]["install"]["go"]
+        assert "cmd/kiterunner@" in go_cmd
+        assert "cmd/kr@" not in go_cmd
+
+    def test_no_pip_keys_in_registry(self):
+        """Registry must never use 'pip' key — only 'pipx'."""
+        for name, info in TOOL_REGISTRY.items():
+            assert "pip" not in info["install"], f"{name} still uses 'pip' key, should be 'pipx'"
+
+    def test_pipx_tools_exist(self):
+        """Tools that were previously pip should now be pipx."""
+        for tool in ("altdns", "sqlmap", "commix"):
+            assert "pipx" in TOOL_REGISTRY[tool]["install"], f"{tool} missing 'pipx' install key"
+
     def test_registry_has_seclists(self):
         assert "seclists" in TOOL_REGISTRY
 
@@ -197,13 +217,45 @@ class TestToolInstaller:
         assert method == "apt"
         assert "nmap" in cmd
 
-    def test_get_install_command_prefers_pip(self):
-        """pip-based tools should use pip when available."""
+    def test_get_install_command_prefers_pipx(self):
+        """pipx-based tools should use pipx when available."""
         info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
         installer = ToolInstaller(info)
-        with patch("shutil.which", return_value="/usr/bin/pip3"):
+        with patch("shutil.which", return_value="/usr/local/bin/pipx"):
             cmd, method = installer.get_install_command("altdns")
-        assert method == "pip"
+        assert method == "pipx"
+        assert "pipx install" in cmd
+        assert "py-altdns" in cmd
+
+    def test_pipx_command_has_no_pip3(self):
+        """pipx install should never use pip3 or --user flag."""
+        info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        installer = ToolInstaller(info)
+        with patch("shutil.which", return_value="/usr/local/bin/pipx"):
+            cmd, method = installer.get_install_command("altdns")
+        assert "pip3" not in cmd
+        assert "--user" not in cmd
+
+    @patch("subprocess.run")
+    def test_pipx_auto_installs_via_apt_when_missing(self, mock_run):
+        """When pipx is not found, tool checker should auto-install it via apt."""
+        mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        installer = ToolInstaller(info)
+        call_count = {"n": 0}
+        def which_side_effect(name):
+            call_count["n"] += 1
+            if name == "pipx":
+                # First call: not found. After apt install: found.
+                return None if call_count["n"] <= 1 else "/usr/local/bin/pipx"
+            return None
+        with patch("shutil.which", side_effect=which_side_effect):
+            cmd, method = installer.get_install_command("altdns")
+        assert method == "pipx"
+        # Verify apt install was called for pipx
+        mock_run.assert_called_once()
+        apt_call = mock_run.call_args[0][0]
+        assert apt_call == ["sudo", "apt", "install", "-y", "pipx"]
 
     def test_get_install_command_brew_on_macos(self):
         """macOS should use brew."""
@@ -308,7 +360,7 @@ class TestEscalationChain:
             call_count["n"] += 1
             if name == "go":
                 return "/usr/bin/go" if call_count["n"] > 3 else None
-            if name in ("pip3", "pip", "cargo"):
+            if name in ("pipx", "cargo"):
                 return None
             return None
         mock_which.side_effect = which_side_effect

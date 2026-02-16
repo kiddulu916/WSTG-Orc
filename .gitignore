@@ -6,3 +6,4 @@ venv/
 CLAUDE.md
 config.yaml
 state.json
+*.cpython-*.pyc

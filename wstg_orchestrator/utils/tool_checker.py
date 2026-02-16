@@ -112,7 +112,7 @@ TOOL_REGISTRY = {
         "check_cmd": "altdns",
         "required_by": ["reconnaissance"],
         "install": {
-            "pip": "py-altdns",
+            "pipx": "py-altdns",
         },
     },
     "puredns": {
@@ -203,7 +203,7 @@ TOOL_REGISTRY = {
         "check_cmd": "sqlmap",
         "required_by": ["input_validation"],
         "install": {
-            "pip": "sqlmap",
+            "pipx": "sqlmap",
             "apt": "sqlmap",
             "brew": "sqlmap",
         },
@@ -212,16 +212,16 @@ TOOL_REGISTRY = {
         "check_cmd": "commix",
         "required_by": ["input_validation"],
         "install": {
-            "pip": "commix",
+            "pipx": "commix",
             "apt": "commix",
         },
     },
     # === API Testing ===
     "kiterunner": {
-        "check_cmd": "kr",
+        "check_cmd": "kiterunner",
         "required_by": ["api_testing"],
         "install": {
-            "go": "go install -v github.com/assetnote/kiterunner/cmd/kr@latest",
+            "go": "go install -v github.com/assetnote/kiterunner/cmd/kiterunner@latest",
         },
     },
     # === Wordlists ===
@@ -274,9 +274,9 @@ def format_summary_table(platform_info: PlatformInfo, tool_status: dict[str, boo
     return "\n".join(lines)
 
 
-_INSTALL_TIER_ORDER = ["go", "pip", "cargo", "apt", "dnf", "pacman", "brew"]
+_INSTALL_TIER_ORDER = ["go", "pipx", "cargo", "apt", "dnf", "pacman", "brew"]
 
-_LANGUAGE_INSTALLERS = {"go", "pip", "cargo"}
+_LANGUAGE_INSTALLERS = {"go", "pipx", "cargo"}
 _SYSTEM_PKG_MANAGERS = {"apt", "dnf", "pacman", "brew"}
 
 
@@ -298,8 +298,18 @@ class ToolInstaller:
 
             if tier in _LANGUAGE_INSTALLERS:
                 # Check if the runtime is available
-                if tier == "pip":
-                    runtime_available = shutil.which("pip3") or shutil.which("pip")
+                if tier == "pipx":
+                    runtime_available = shutil.which("pipx")
+                    if not runtime_available:
+                        # Auto-install pipx via apt
+                        try:
+                            subprocess.run(
+                                ["sudo", "apt", "install", "-y", "pipx"],
+                                capture_output=True, timeout=120,
+                            )
+                            runtime_available = shutil.which("pipx")
+                        except Exception:
+                            pass
                 else:
                     runtime_available = shutil.which(tier)
                 if not runtime_available:
@@ -309,8 +319,8 @@ class ToolInstaller:
                 package = install_info[tier]
                 if tier == "go":
                     cmd = package  # Already a full go install command
-                elif tier == "pip":
-                    cmd = f"pip3 install --user {package}"
+                elif tier == "pipx":
+                    cmd = f"pipx install {package}"
                 elif tier == "cargo":
                     cmd = f"cargo install {package}"
                 return (cmd, tier)
@@ -367,11 +377,11 @@ class ToolInstaller:
         install_info = TOOL_REGISTRY[tool_name]["install"]
 
         # Step 1: Try language installers -- offer to install runtime if missing
-        for lang in ("go", "pip", "cargo"):
+        for lang in ("go", "pipx", "cargo"):
             if lang not in install_info:
                 continue
-            if lang == "pip":
-                runtime_available = shutil.which("pip3") or shutil.which("pip")
+            if lang == "pipx":
+                runtime_available = shutil.which("pipx")
             else:
                 runtime_available = shutil.which(lang)
 
@@ -441,7 +451,7 @@ class ToolInstaller:
 
 _RUNTIME_PACKAGES = {
     "go": {"apt": "golang-go", "dnf": "golang", "pacman": "go", "brew": "go"},
-    "pip": {"apt": "python3-pip", "dnf": "python3-pip", "pacman": "python-pip", "brew": "python3"},
+    "pipx": {"apt": "pipx", "dnf": "pipx", "pacman": "python-pipx", "brew": "pipx"},
     "cargo": {"apt": "cargo", "dnf": "cargo", "pacman": "rust", "brew": "rust"},
 }
 
