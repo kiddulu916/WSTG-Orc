@@ -2,7 +2,9 @@ import os
 import platform
 import pytest
 from unittest.mock import patch, mock_open, MagicMock
-from wstg_orchestrator.utils.tool_checker import PlatformInfo, detect_platform, TOOL_REGISTRY, check_tools
+from wstg_orchestrator.utils.tool_checker import (
+    PlatformInfo, detect_platform, TOOL_REGISTRY, check_tools, format_summary_table,
+)
 
 
 class TestDetectPlatform:
@@ -144,3 +146,33 @@ class TestCheckTools:
         status = check_tools()
         assert status["nmap"] is True
         assert status["subfinder"] is False
+
+
+class TestSummaryTable:
+    def test_table_contains_platform_info(self):
+        info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        status = {"nmap": True, "subfinder": False}
+        output = format_summary_table(info, status)
+        assert "kali" in output.lower()
+        assert "apt" in output.lower()
+
+    def test_table_shows_found_tools(self):
+        info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        status = {"nmap": True}
+        output = format_summary_table(info, status)
+        assert "nmap" in output
+        assert "Found" in output or "\u2713" in output
+
+    def test_table_shows_missing_tools(self):
+        info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        status = {"nmap": False}
+        output = format_summary_table(info, status)
+        assert "nmap" in output
+        assert "Missing" in output or "\u2717" in output
+
+    def test_table_shows_counts(self):
+        info = PlatformInfo(os_type="linux", distro="kali", pkg_manager="apt")
+        status = {"nmap": True, "subfinder": True, "sqlmap": False}
+        output = format_summary_table(info, status)
+        assert "2" in output
+        assert "1" in output

@@ -234,6 +234,32 @@ def check_tools() -> dict[str, bool]:
     return status
 
 
+def format_summary_table(platform_info: PlatformInfo, tool_status: dict[str, bool]) -> str:
+    """Format a summary table of tool availability for display."""
+    available = sum(1 for v in tool_status.values() if v)
+    missing = len(tool_status) - available
+    distro_display = platform_info.distro.title()
+
+    lines = []
+    lines.append("=" * 64)
+    lines.append(f"  WSTG-Orc Tool Checker")
+    lines.append(f"  OS: {platform_info.os_type.title()} ({distro_display}) | Package Manager: {platform_info.pkg_manager or 'none'}")
+    lines.append("=" * 64)
+    lines.append(f"  {'Tool':<22} {'Status':<12} {'Used By'}")
+    lines.append("  " + "-" * 58)
+
+    for name, is_available in sorted(tool_status.items()):
+        status = "\u2713 Found" if is_available else "\u2717 Missing"
+        required_by = ", ".join(TOOL_REGISTRY.get(name, {}).get("required_by", []))
+        lines.append(f"  {name:<22} {status:<12} {required_by}")
+
+    lines.append("=" * 64)
+    lines.append(f"  {available}/{len(tool_status)} tools available | {missing} missing")
+    lines.append("=" * 64)
+
+    return "\n".join(lines)
+
+
 def _detect_wsl() -> bool:
     try:
         if os.path.exists("/proc/version"):
