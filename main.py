@@ -21,6 +21,7 @@ from wstg_orchestrator.utils.rate_limit_handler import RateLimiter
 from wstg_orchestrator.utils.evidence_logger import EvidenceLogger
 from wstg_orchestrator.utils.callback_server import CallbackServer
 from wstg_orchestrator.utils.command_runner import CommandRunner
+from wstg_orchestrator.utils.tool_checker import ToolChecker
 from wstg_orchestrator.scope_builder import ScopeBuilder
 from wstg_orchestrator.reporting import ReportGenerator
 from wstg_orchestrator.utils.cli_handler import SignalHandler, KeyListener
@@ -88,7 +89,9 @@ class Orchestrator:
         config_path: str,
         state_path: str = "state.json",
         evidence_dir: str = "evidence",
+        tool_status: dict[str, bool] | None = None,
     ):
+        self.tool_status = tool_status or {}
         self.config = ConfigLoader(config_path)
         self.scope_checker = self.config.create_scope_checker()
         self.state = StateManager(
@@ -123,22 +126,10 @@ class Orchestrator:
     def get_execution_order(self) -> list[str]:
         return list(EXECUTION_ORDER)
 
-    def _check_tools(self):
-        tools = [
-            "nmap", "subfinder", "amass", "gau", "httpx",
-            "gobuster", "whatweb", "sqlmap", "commix",
-        ]
-        for tool in tools:
-            if self.command_runner.is_tool_available(tool):
-                logger.info(f"Tool available: {tool}")
-            else:
-                logger.warning(f"Tool not found: {tool} (will use fallback if available)")
-
     async def run(self, signal_handler=None):
         logger.info(f"Starting WSTG scan for {self.config.company_name}")
         logger.info(f"Target domain: {self.config.base_domain}")
 
-        self._check_tools()
         self.callback_server.start()
 
         try:
@@ -189,6 +180,10 @@ def main():
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
 
+    # Tool check — runs before anything else
+    checker = ToolChecker()
+    tool_status = checker.run()
+
     if args.new or not os.path.exists(args.config):
         builder = ScopeBuilder()
         config_data = builder.build()
@@ -199,6 +194,7 @@ def main():
         config_path=args.config,
         state_path=args.state,
         evidence_dir=args.evidence,
+        tool_status=tool_status,
     )
 
     # Register all modules
