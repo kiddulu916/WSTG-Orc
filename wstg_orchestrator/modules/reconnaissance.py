@@ -1,8 +1,6 @@
 # wstg_orchestrator/modules/reconnaissance.py
 import asyncio
 import re
-import shlex
-import subprocess as _subprocess
 from urllib.parse import urlparse, parse_qs
 
 from wstg_orchestrator.modules.base_module import BaseModule
@@ -31,19 +29,6 @@ class ReconModule(BaseModule):
     SECLISTS_BASE = "/usr/share/wordlists/seclists"
     SECLISTS_WORDLIST = f"{SECLISTS_BASE}/Discovery/DNS/n0kovo_subdomains.txt"
     SECLISTS_RESOLVERS = f"{SECLISTS_BASE}/Miscellaneous/dns-resolvers.txt"
-    TOOL_INSTALL_COMMANDS = {
-        "amass": "go install -v github.com/owasp-amass/amass/v4/...@master",
-        "whois": "apt install whois",
-        "assetfinder": "go install -v github.com/tomnomnom/assetfinder@latest",
-        "github-subdomains": "go install -v github.com/gwen001/github-subdomains@latest",
-        "gitlab-subdomains": "go install -v github.com/gwen001/gitlab-subdomains@latest",
-        "altdns": "pip install py-altdns",
-        "puredns": "go install -v github.com/d3mondev/puredns/v2@latest",
-        "curl": "apt install curl",
-        "jq": "apt install jq",
-        "seclists": "apt install seclists",
-    }
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._cmd = CommandRunner(
@@ -128,23 +113,6 @@ class ReconModule(BaseModule):
                 cidrs.append(cidr)
         return cidrs
 
-    def _prompt_install_tool(self, tool_name: str, install_cmd: str) -> bool:
-        """Prompt user to install a missing tool. Returns True if installed successfully."""
-        self.logger.warning(f"{tool_name} not found.")
-        answer = cli_input(f"Install {tool_name} with `{install_cmd}`? [y/N]: ").strip().lower()
-        if answer != "y":
-            self.logger.info(f"User declined to install {tool_name}, skipping")
-            return False
-        try:
-            result = _subprocess.run(shlex.split(install_cmd), capture_output=True, text=True, timeout=300)
-            if result.returncode == 0:
-                self.logger.info(f"{tool_name} installed successfully")
-                return True
-            self.logger.error(f"Failed to install {tool_name}: {result.stderr}")
-        except Exception as e:
-            self.logger.error(f"Error installing {tool_name}: {e}")
-        return False
-
     def _resolve_tool_token(self, tool_config_name: str, env_var: str) -> str | None:
         """Resolve an API token from config -> env -> interactive prompt.
 
@@ -180,10 +148,8 @@ class ReconModule(BaseModule):
         self.logger.info(f"Running amass intel -org for: {company_name}")
         result = self._cmd.run("amass", ["intel", "-org", company_name], timeout=300)
         if result.tool_missing:
-            if self._prompt_install_tool("amass", self.TOOL_INSTALL_COMMANDS["amass"]):
-                result = self._cmd.run("amass", ["intel", "-org", company_name], timeout=300)
-            else:
-                return result
+            self.logger.warning("amass not found, skipping")
+            return result
         if result.returncode == 0 and result.stdout.strip():
             self.evidence.log_tool_output("reconnaissance", "amass_intel_org", result.stdout)
         return result
@@ -201,10 +167,8 @@ class ReconModule(BaseModule):
         self.logger.info(f"Running whois RADB lookup for: {asn}")
         result = self._cmd.run("whois", ["-h", "whois.radb.net", "--", f"-i origin {asn}"], timeout=30)
         if result.tool_missing:
-            if self._prompt_install_tool("whois", self.TOOL_INSTALL_COMMANDS["whois"]):
-                result = self._cmd.run("whois", ["-h", "whois.radb.net", "--", f"-i origin {asn}"], timeout=30)
-            else:
-                return result
+            self.logger.warning("whois not found, skipping")
+            return result
         if result.returncode == 0 and result.stdout.strip():
             self.evidence.log_tool_output("reconnaissance", f"whois_radb_{asn}", result.stdout)
         return result
@@ -397,10 +361,8 @@ class ReconModule(BaseModule):
         self.logger.info(f"Running assetfinder for domain: {domain}")
         result = self._cmd.run("assetfinder", ["--subs-only", domain], timeout=120)
         if result.tool_missing:
-            if self._prompt_install_tool("assetfinder", self.TOOL_INSTALL_COMMANDS["assetfinder"]):
-                result = self._cmd.run("assetfinder", ["--subs-only", domain], timeout=120)
-            else:
-                return []
+            self.logger.warning("assetfinder not found, skipping")
+            return []
         if result.returncode == 0:
             self.evidence.log_tool_output("reconnaissance", "assetfinder", result.stdout)
             return [line.strip() for line in result.stdout.splitlines() if line.strip()]
@@ -408,11 +370,6 @@ class ReconModule(BaseModule):
 
     async def _run_crtsh(self, domain: str) -> list[str]:
         self.logger.info(f"Running crt.sh lookup for domain: {domain}")
-        # Check curl and jq availability
-        for tool in ("curl", "jq"):
-            if not self._cmd.is_tool_available(tool):
-                if not self._prompt_install_tool(tool, self.TOOL_INSTALL_COMMANDS[tool]):
-                    return []
 
         command = f"curl -s 'https://crt.sh/?q=%25.{domain}&output=json' | jq -r '.[].name_value'"
         result = self._cmd.run_pipeline("crt.sh", command, timeout=120)
@@ -437,10 +394,8 @@ class ReconModule(BaseModule):
             "github-subdomains", ["-d", domain, "-t", token], timeout=120,
         )
         if result.tool_missing:
-            if self._prompt_install_tool("github-subdomains", self.TOOL_INSTALL_COMMANDS["github-subdomains"]):
-                result = self._cmd.run("github-subdomains", ["-d", domain, "-t", token], timeout=120)
-            else:
-                return []
+            self.logger.warning("github-subdomains not found, skipping")
+            return []
         if result.returncode == 0:
             self.evidence.log_tool_output("reconnaissance", "github_subdomains", result.stdout)
             return [line.strip() for line in result.stdout.splitlines() if line.strip()]
@@ -456,21 +411,12 @@ class ReconModule(BaseModule):
             "gitlab-subdomains", ["-d", domain, "-t", token], timeout=120,
         )
         if result.tool_missing:
-            if self._prompt_install_tool("gitlab-subdomains", self.TOOL_INSTALL_COMMANDS["gitlab-subdomains"]):
-                result = self._cmd.run("gitlab-subdomains", ["-d", domain, "-t", token], timeout=120)
-            else:
-                return []
+            self.logger.warning("gitlab-subdomains not found, skipping")
+            return []
         if result.returncode == 0:
             self.evidence.log_tool_output("reconnaissance", "gitlab_subdomains", result.stdout)
             return [line.strip() for line in result.stdout.splitlines() if line.strip()]
         return []
-
-    def _ensure_seclists(self) -> bool:
-        """Check if SecLists is installed, prompt to install if not. Returns True if available."""
-        import os
-        if os.path.isdir(self.SECLISTS_BASE):
-            return True
-        return self._prompt_install_tool("seclists", self.TOOL_INSTALL_COMMANDS["seclists"])
 
     async def _run_altdns(self, subdomains: list[str]) -> list[str]:
         if not subdomains:
@@ -492,7 +438,8 @@ class ReconModule(BaseModule):
         cfg = self.config.get_tool_config("altdns")
         wordlist = cfg.get("wordlist")
         if not wordlist:
-            if not self._ensure_seclists():
+            if not os.path.isdir(self.SECLISTS_BASE):
+                self.logger.warning("seclists not found, skipping altdns")
                 os.unlink(input_file)
                 os.unlink(output_file)
                 return []
@@ -503,15 +450,10 @@ class ReconModule(BaseModule):
             timeout=300,
         )
         if result.tool_missing:
-            if self._prompt_install_tool("altdns", self.TOOL_INSTALL_COMMANDS["altdns"]):
-                result = self._cmd.run(
-                    "altdns", ["-i", input_file, "-o", output_file, "-w", wordlist],
-                    timeout=300,
-                )
-            else:
-                os.unlink(input_file)
-                os.unlink(output_file)
-                return []
+            self.logger.warning("altdns not found, skipping")
+            os.unlink(input_file)
+            os.unlink(output_file)
+            return []
 
         os.unlink(input_file)
 
@@ -541,7 +483,8 @@ class ReconModule(BaseModule):
         cfg = self.config.get_tool_config("puredns")
         resolvers = cfg.get("resolvers")
         if not resolvers:
-            if not self._ensure_seclists():
+            if not os.path.isdir(self.SECLISTS_BASE):
+                self.logger.warning("seclists not found, skipping puredns")
                 os.unlink(input_file)
                 return []
             resolvers = self.SECLISTS_RESOLVERS
@@ -551,14 +494,9 @@ class ReconModule(BaseModule):
             timeout=300,
         )
         if result.tool_missing:
-            if self._prompt_install_tool("puredns", self.TOOL_INSTALL_COMMANDS["puredns"]):
-                result = self._cmd.run(
-                    "puredns", ["resolve", input_file, "--resolvers", resolvers],
-                    timeout=300,
-                )
-            else:
-                os.unlink(input_file)
-                return []
+            self.logger.warning("puredns not found, skipping")
+            os.unlink(input_file)
+            return []
 
         os.unlink(input_file)
 

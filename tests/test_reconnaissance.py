@@ -253,23 +253,6 @@ def test_parse_whois_radb_output_no_routes(recon_module):
     assert recon_module._parse_whois_radb_output(stdout) == []
 
 
-@patch("wstg_orchestrator.modules.reconnaissance.cli_input", return_value="y")
-@patch("subprocess.run")
-def test_prompt_install_tool_accepted(mock_run, mock_input, recon_module):
-    """When user accepts, install command runs and returns True."""
-    mock_run.return_value = MagicMock(returncode=0)
-    result = recon_module._prompt_install_tool("amass", "go install -v github.com/owasp-amass/amass/v4/...@master")
-    assert result is True
-    mock_run.assert_called_once()
-
-
-@patch("wstg_orchestrator.modules.reconnaissance.cli_input", return_value="n")
-def test_prompt_install_tool_declined(mock_input, recon_module):
-    """When user declines, returns False without running install."""
-    result = recon_module._prompt_install_tool("amass", "go install -v github.com/owasp-amass/amass/v4/...@master")
-    assert result is False
-
-
 @pytest.mark.asyncio
 async def test_run_amass_intel_org_success(recon_module):
     """Successful amass intel -org returns parsed results."""
@@ -285,16 +268,14 @@ async def test_run_amass_intel_org_success(recon_module):
 
 
 @pytest.mark.asyncio
-async def test_run_amass_intel_org_missing_prompts_install(recon_module):
-    """When amass is missing, prompts to install."""
+async def test_run_amass_intel_org_missing_skips(recon_module):
+    """When amass is missing, logs warning and returns result with tool_missing."""
     missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
-    success = MagicMock(tool_missing=False, returncode=0, stdout="AS1, 10.0.0.0/8, Tesla\n", stderr="")
 
     recon_module.config.company_name = "Tesla"
-    with patch.object(recon_module._cmd, 'run', side_effect=[missing, success]):
-        with patch.object(recon_module, '_prompt_install_tool', return_value=True):
-            result = await recon_module._run_amass_intel_org("Tesla")
-    assert result.returncode == 0
+    with patch.object(recon_module._cmd, 'run', return_value=missing):
+        result = await recon_module._run_amass_intel_org("Tesla")
+    assert result.tool_missing is True
 
 
 @pytest.mark.asyncio
@@ -360,15 +341,13 @@ async def test_lookup_asn_ip_ranges_deduplicates(recon_module):
 
 
 @pytest.mark.asyncio
-async def test_run_whois_radb_missing_prompts_install(recon_module):
-    """When whois is missing, prompts to install."""
+async def test_run_whois_radb_missing_skips(recon_module):
+    """When whois is missing, logs warning and returns result with tool_missing."""
     missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
-    success = MagicMock(tool_missing=False, returncode=0, stdout="route: 10.0.0.0/8\n", stderr="")
 
-    with patch.object(recon_module._cmd, 'run', side_effect=[missing, success]):
-        with patch.object(recon_module, '_prompt_install_tool', return_value=True):
-            result = await recon_module._run_whois_radb("AS12345")
-    assert result.returncode == 0
+    with patch.object(recon_module._cmd, 'run', return_value=missing):
+        result = await recon_module._run_whois_radb("AS12345")
+    assert result.tool_missing is True
 
 
 def test_subcategories_includes_asn_enumeration(recon_module):
@@ -897,21 +876,11 @@ async def test_run_assetfinder_success(recon_module):
 
 
 @pytest.mark.asyncio
-async def test_run_assetfinder_missing_prompts_install(recon_module):
-    missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
-    success = MagicMock(tool_missing=False, returncode=0, stdout="sub.example.com\n", stderr="")
-    with patch.object(recon_module._cmd, 'run', side_effect=[missing, success]):
-        with patch.object(recon_module, '_prompt_install_tool', return_value=True):
-            results = await recon_module._run_assetfinder("example.com")
-    assert results == ["sub.example.com"]
-
-
-@pytest.mark.asyncio
-async def test_run_assetfinder_missing_declined(recon_module):
+async def test_run_assetfinder_missing_skips(recon_module):
+    """When assetfinder is missing, logs warning and returns empty list."""
     missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
     with patch.object(recon_module._cmd, 'run', return_value=missing):
-        with patch.object(recon_module, '_prompt_install_tool', return_value=False):
-            results = await recon_module._run_assetfinder("example.com")
+        results = await recon_module._run_assetfinder("example.com")
     assert results == []
 
 
@@ -920,9 +889,8 @@ async def test_run_crtsh_success(recon_module):
     mock_result = MagicMock(returncode=0,
                             stdout="sub1.example.com\n*.example.com\nsub2.example.com\n",
                             timed_out=False)
-    with patch.object(recon_module._cmd, 'is_tool_available', return_value=True):
-        with patch.object(recon_module._cmd, 'run_pipeline', return_value=mock_result):
-            results = await recon_module._run_crtsh("example.com")
+    with patch.object(recon_module._cmd, 'run_pipeline', return_value=mock_result):
+        results = await recon_module._run_crtsh("example.com")
     # Wildcards should be stripped
     assert "sub1.example.com" in results
     assert "sub2.example.com" in results
@@ -930,20 +898,19 @@ async def test_run_crtsh_success(recon_module):
 
 
 @pytest.mark.asyncio
-async def test_run_crtsh_curl_missing(recon_module):
-    """When curl is missing, prompts install. If declined, returns empty."""
-    with patch.object(recon_module._cmd, 'is_tool_available', return_value=False):
-        with patch.object(recon_module, '_prompt_install_tool', return_value=False):
-            results = await recon_module._run_crtsh("example.com")
+async def test_run_crtsh_pipeline_failure(recon_module):
+    """When crt.sh pipeline fails, returns empty list."""
+    mock_result = MagicMock(returncode=1, stdout="", timed_out=False)
+    with patch.object(recon_module._cmd, 'run_pipeline', return_value=mock_result):
+        results = await recon_module._run_crtsh("example.com")
     assert results == []
 
 
 @pytest.mark.asyncio
 async def test_run_crtsh_failure(recon_module):
     mock_result = MagicMock(returncode=1, stdout="", timed_out=False)
-    with patch.object(recon_module._cmd, 'is_tool_available', return_value=True):
-        with patch.object(recon_module._cmd, 'run_pipeline', return_value=mock_result):
-            results = await recon_module._run_crtsh("example.com")
+    with patch.object(recon_module._cmd, 'run_pipeline', return_value=mock_result):
+        results = await recon_module._run_crtsh("example.com")
     assert results == []
 
 
@@ -965,12 +932,12 @@ async def test_run_github_subdomains_no_token(recon_module):
 
 
 @pytest.mark.asyncio
-async def test_run_github_subdomains_missing_prompts_install(recon_module):
+async def test_run_github_subdomains_missing_skips(recon_module):
+    """When github-subdomains is missing, logs warning and returns empty list."""
     missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
     with patch.object(recon_module, '_resolve_tool_token', return_value="ghp_test"):
         with patch.object(recon_module._cmd, 'run', return_value=missing):
-            with patch.object(recon_module, '_prompt_install_tool', return_value=False):
-                results = await recon_module._run_github_subdomains("example.com")
+            results = await recon_module._run_github_subdomains("example.com")
     assert results == []
 
 
@@ -991,22 +958,6 @@ async def test_run_gitlab_subdomains_no_token(recon_module):
     assert results == []
 
 
-# --- _ensure_seclists tests ---
-
-def test_ensure_seclists_installed(recon_module):
-    """Returns True when seclists directory exists."""
-    with patch("os.path.isdir", return_value=True):
-        assert recon_module._ensure_seclists() is True
-
-
-def test_ensure_seclists_not_installed_prompts(recon_module):
-    """When seclists not found, prompts to install."""
-    with patch("os.path.isdir", return_value=False):
-        with patch.object(recon_module, '_prompt_install_tool', return_value=False) as mock_prompt:
-            assert recon_module._ensure_seclists() is False
-            mock_prompt.assert_called_once_with("seclists", "apt install seclists")
-
-
 # --- _run_altdns tests ---
 
 @pytest.mark.asyncio
@@ -1017,20 +968,19 @@ async def test_run_altdns_empty_input(recon_module):
 
 
 @pytest.mark.asyncio
-async def test_run_altdns_missing_declined(recon_module):
-    """When altdns is missing and install declined, returns empty."""
+async def test_run_altdns_missing_skips(recon_module):
+    """When altdns is missing, logs warning and returns empty."""
     missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
-    with patch.object(recon_module, '_ensure_seclists', return_value=True):
+    with patch("os.path.isdir", return_value=True):
         with patch.object(recon_module._cmd, 'run', return_value=missing):
-            with patch.object(recon_module, '_prompt_install_tool', return_value=False):
-                results = await recon_module._run_altdns(["sub.example.com"])
+            results = await recon_module._run_altdns(["sub.example.com"])
     assert results == []
 
 
 @pytest.mark.asyncio
-async def test_run_altdns_seclists_missing_declined(recon_module):
-    """When seclists is missing and install declined, returns empty without running altdns."""
-    with patch.object(recon_module, '_ensure_seclists', return_value=False):
+async def test_run_altdns_seclists_missing_skips(recon_module):
+    """When seclists is missing, logs warning and returns empty without running altdns."""
+    with patch("os.path.isdir", return_value=False):
         results = await recon_module._run_altdns(["sub.example.com"])
     assert results == []
 
@@ -1056,7 +1006,7 @@ async def test_run_altdns_success(recon_module):
             real_os.lseek(fd, 0, real_os.SEEK_SET)
             return (fd, real_output)
 
-    with patch.object(recon_module, '_ensure_seclists', return_value=True):
+    with patch("os.path.isdir", return_value=True):
         with patch("tempfile.mkstemp", side_effect=fake_mkstemp):
             with patch.object(recon_module._cmd, 'run', return_value=mock_result):
                 results = await recon_module._run_altdns(["sub.example.com"])
@@ -1076,7 +1026,7 @@ async def test_run_puredns_success(recon_module):
     """puredns resolves subdomains from stdout."""
     mock_result = MagicMock(tool_missing=False, returncode=0,
                             stdout="dev.sub.example.com\n")
-    with patch.object(recon_module, '_ensure_seclists', return_value=True):
+    with patch("os.path.isdir", return_value=True):
         with patch.object(recon_module._cmd, 'run', return_value=mock_result):
             results = await recon_module._run_puredns(["dev.sub.example.com", "staging.sub.example.com"])
     assert results == ["dev.sub.example.com"]
@@ -1089,19 +1039,19 @@ async def test_run_puredns_empty_input(recon_module):
 
 
 @pytest.mark.asyncio
-async def test_run_puredns_missing_declined(recon_module):
+async def test_run_puredns_missing_skips(recon_module):
+    """When puredns is missing, logs warning and returns empty."""
     missing = MagicMock(tool_missing=True, returncode=1, stdout="", stderr="")
-    with patch.object(recon_module, '_ensure_seclists', return_value=True):
+    with patch("os.path.isdir", return_value=True):
         with patch.object(recon_module._cmd, 'run', return_value=missing):
-            with patch.object(recon_module, '_prompt_install_tool', return_value=False):
-                results = await recon_module._run_puredns(["sub.example.com"])
+            results = await recon_module._run_puredns(["sub.example.com"])
     assert results == []
 
 
 @pytest.mark.asyncio
-async def test_run_puredns_seclists_missing_declined(recon_module):
-    """When seclists is missing and install declined, returns empty."""
-    with patch.object(recon_module, '_ensure_seclists', return_value=False):
+async def test_run_puredns_seclists_missing_skips(recon_module):
+    """When seclists is missing, logs warning and returns empty."""
+    with patch("os.path.isdir", return_value=False):
         results = await recon_module._run_puredns(["sub.example.com"])
     assert results == []
 
